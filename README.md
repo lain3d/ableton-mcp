@@ -15,6 +15,7 @@ Give feedback, get inspired, and build on top of the MCP: [Discord](https://disc
 - **Clip creation**: Create and edit MIDI clips with notes
 - **Arrangement view composition**: Build full songs autonomously in Arrangement View, including sections like intro, buildup, drop, breakdown, and outro
 - **Session control**: Start and stop playback, fire clips, and control transport across Session View and Arrangement View
+- **Anonymous telemetry**: Opt-in usage tracking to help improve the tool
 
 ## Components
 
