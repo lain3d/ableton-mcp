@@ -163,11 +163,51 @@ def synth_maxpat(script_name="mcp_bridge.js"):
     }
 
 
+def midi_maxpat(script_name="mcp_bridge.js"):
+    """A MIDI-effect device that INJECTS MIDI into Live. The Node bridge emits
+    raw MIDI bytes on its 'midi' outlet (from m4l_send_midi / m4l_send_cc); the
+    patch routes them straight to [midiout], which sends them downstream to the
+    track's instrument and into recording.
+
+    NOTE: hand-authored patcher — verify by loading in Live. Uses mcp_bridge.js,
+    so run only one AbletonMCP M4L device at a time."""
+    boxes = [
+        _box("obj-1", "newobj",
+             "node.script " + script_name + " @autostart 1 @watch 1",
+             40, 60, 300, 22, numin=1, numout=2, outtype=["", "bang"]),
+        _box("obj-2", "newobj", "loadbang", 380, 20, 60, 22, numin=1, numout=1),
+        _box("obj-3", "message", "script start", 380, 60, 80, 22, numin=2, numout=1),
+        _box("obj-4", "newobj", "route midi", 40, 110, 90, 22, numin=1, numout=2,
+             outtype=["", ""]),
+        # midiout sends a received list of bytes as raw MIDI into Live's stream
+        _box("obj-5", "newobj", "midiout", 40, 160, 70, 22, numin=1, numout=0),
+        _box("obj-6", "comment", "AbletonMCP MIDI out — bridge -> Live (TCP 9878)",
+             40, 200, 320, 20),
+    ]
+    lines = [
+        _line("obj-2", 0, "obj-3", 0),   # loadbang -> "script start"
+        _line("obj-3", 0, "obj-1", 0),   # -> node.script
+        _line("obj-1", 0, "obj-4", 0),   # bridge messages -> route midi
+        _line("obj-4", 0, "obj-5", 0),   # raw bytes -> midiout
+    ]
+    return {
+        "patcher": {
+            "fileversion": 1,
+            "appversion": {"major": 8, "minor": 1, "revision": 2,
+                           "architecture": "x64", "modernui": 1},
+            "rect": [80.0, 80.0, 620.0, 280.0],
+            "boxes": boxes,
+            "lines": lines,
+            "originid": "pat-3",
+        }
+    }
+
+
 def main():
     here = os.path.dirname(os.path.abspath(__file__))
     ap = argparse.ArgumentParser()
     ap.add_argument("--maxpat", help="Patcher JSON to wrap (default: built-in device)")
-    ap.add_argument("--device", choices=["analysis", "synth"], default="analysis",
+    ap.add_argument("--device", choices=["analysis", "synth", "midi"], default="analysis",
                     help="Which built-in device patcher to build")
     ap.add_argument("--out", default=None)
     ap.add_argument("--script", default="mcp_bridge.js")
@@ -180,12 +220,16 @@ def main():
     elif args.device == "synth":
         patch = synth_maxpat(args.script)
         kind = "audio_effect"   # generates a tone; loads on an audio track
+    elif args.device == "midi":
+        patch = midi_maxpat(args.script)
+        kind = "midi_effect"    # injects MIDI; loads on a MIDI track
     else:
         patch = analysis_maxpat(args.script)
         kind = "audio_effect"
 
     if args.out is None:
-        name = "AbletonMCP_Synth.amxd" if args.device == "synth" else "AbletonMCP_Analysis.amxd"
+        name = {"synth": "AbletonMCP_Synth.amxd",
+                "midi": "AbletonMCP_MIDI.amxd"}.get(args.device, "AbletonMCP_Analysis.amxd")
         args.out = os.path.join(here, name)
 
     patch_bytes = json.dumps(patch, indent=1).encode("utf-8")

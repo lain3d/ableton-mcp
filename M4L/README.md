@@ -36,8 +36,12 @@ Node via `max-api` messages; MIDI/CC instructions flow Node → Max via outlets.
 - `AbletonMCP_Synth.amxd` — a sine synth: **generates audio from nothing**. The
   bridge's note outlet (from `m4l_send_midi`) drives a `cycle~` oscillator;
   velocity sets the level, so a note plays a pitch and velocity 0 silences it.
+- `AbletonMCP_MIDI.amxd` — a MIDI-effect device that **injects MIDI into Live**.
+  The bridge emits raw MIDI bytes on its `midi` outlet (from `m4l_send_midi` /
+  `m4l_send_cc`) straight into `[midiout]`, so notes/CC flow downstream to the
+  track's instrument in real time.
 
-Rebuild: `python build_amxd.py --device analysis` / `--device synth`
+Rebuild: `python build_amxd.py --device analysis | synth | midi`
 
 **Run only one AbletonMCP M4L device at a time** — they all host the bridge on
 port 9878 and would collide.
@@ -58,15 +62,24 @@ port 9878 and would collide.
   goes 0 → ~0.87 when a note is triggered via `m4l_send_midi`, back to 0 on
   velocity 0. This is real audio created from nothing — impossible via the LOM.
 
-**Limitations gauged while building this:**
-- Synths must be hand-authored as Max DSP patches, and can only be verified
-  indirectly (the coarse `output_meter_level`, not the actual sound). This
-  minimal synth has no ADSR envelope — a musical instrument would build one in
-  the patch.
-- MIDI/CC *generation into Live* (`send_midi`/`send_cc`) needs a dedicated
-  **MIDI Effect** device (`mmmm` marker) wiring the Node outlet to
-  `noteout`/`ctlout`; in the analysis/synth devices those outlets drive analysis
-  or the oscillator, not Live's MIDI stream. (Next up.)
+**MIDI generation — verified in Live:**
+- With the MIDI-effect device before a stock instrument, `m4l_send_midi` plays a
+  note through to the instrument: the track meter goes 0 → ~0.87 with the
+  instrument's own decay envelope. So notes reach Live's MIDI stream. `send_cc`
+  uses the same `[midiout]` path; its audible effect depends on a MIDI mapping.
+
+**Limitations gauged while building these:**
+- Devices are hand-authored Max patcher JSON and can only be verified by loading
+  in Live and observing behavior — audio *timbre* only indirectly (the coarse
+  `output_meter_level`, not the actual sound; a human can just listen). The
+  minimal synth has no ADSR envelope.
+- **One M4L device at a time** — they all bind the bridge on 9878; a second one
+  logs `EADDRINUSE` and won't answer. Remove the other device to free the port.
+- **M4L-generated MIDI isn't recorded** — Live records the track *input*, not
+  MIDI injected mid-chain, so the MIDI device drives the instrument live but
+  can't author clips (verified: recording captured 0 notes). To *write* notes
+  into a clip, use the Remote Script's `add_notes_to_clip` (LOM) instead; the
+  M4L device is for real-time / generative playing and CC modulation.
 
 ## Install (how it's loaded)
 

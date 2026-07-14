@@ -87,18 +87,25 @@ function handle(cmd) {
         age_ms: analysis.updated_at ? Date.now() - analysis.updated_at : null,
       };
     case 'send_midi': {
-      // Node → Max: emit a MIDI note. Patch wires this outlet to noteout/midiout.
       const pitch = Math.max(0, Math.min(127, parseInt(p.pitch, 10)));
       const velocity = Math.max(0, Math.min(127, parseInt(p.velocity != null ? p.velocity : 100, 10)));
       const duration = Number(p.duration != null ? p.duration : 100); // ms
+      const ch = Math.max(0, Math.min(15, parseInt(p.channel != null ? p.channel : 0, 10)));
+      // 'note' outlet drives the synth device; 'midi' outlet (raw status/data
+      // bytes) feeds the MIDI-effect device's [midiout] straight into Live.
       Max.outlet('note', pitch, velocity, duration);
-      return { sent: true, pitch, velocity, duration };
+      Max.outlet('midi', 0x90 + ch, pitch, velocity);            // note on
+      setTimeout(() => Max.outlet('midi', 0x80 + ch, pitch, 0),  // note off
+                 Math.max(1, duration));
+      return { sent: true, pitch, velocity, duration, channel: ch };
     }
     case 'send_cc': {
       const controller = Math.max(0, Math.min(127, parseInt(p.controller, 10)));
       const value = Math.max(0, Math.min(127, parseInt(p.value, 10)));
+      const ch = Math.max(0, Math.min(15, parseInt(p.channel != null ? p.channel : 0, 10)));
       Max.outlet('cc', controller, value);
-      return { sent: true, controller, value };
+      Max.outlet('midi', 0xB0 + ch, controller, value);          // control change
+      return { sent: true, controller, value, channel: ch };
     }
     default:
       throw new Error('Unknown command: ' + type);
