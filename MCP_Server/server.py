@@ -134,6 +134,11 @@ class AbletonConnection:
             "set_track_input_routing", "set_track_output_routing",
             "set_clip_envelope", "set_clip_mixer_envelope", "clear_clip_envelope",
             "undo", "redo", "capture_midi",
+            # Colors, recording/transport, selection & view
+            "set_track_color", "set_clip_color", "set_scene_color",
+            "set_metronome", "set_arrangement_record", "set_session_record",
+            "set_arrangement_loop", "set_time_signature", "set_track_fold",
+            "select_track", "select_scene", "show_view",
             # Arrangement view commands
             "switch_to_arrangement_view", "set_current_song_time",
             "duplicate_session_clip_to_arrangement"
@@ -1840,6 +1845,243 @@ def capture_midi(ctx: Context, user_prompt: str = "") -> str:
     except Exception as e:
         logger.error(f"Error capturing MIDI: {str(e)}")
         return f"Error capturing MIDI: {str(e)}"
+
+
+# ── Colors, recording/transport, selection & view ──────────────────────────────
+
+@mcp.tool()
+@telemetry_tool("set_track_color")
+def set_track_color(ctx: Context, track_index: int, color: int, track_type: str = "regular", user_prompt: str = "") -> str:
+    """
+    Set a track's color.
+
+    Parameters:
+    - track_index: Index of the track
+    - color: RGB integer, e.g. 16711680 for red (0xFF0000), 65280 for green
+    - track_type: 'regular' (default), 'return', or 'master'
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("set_track_color", {"track_index": track_index, "color": color, "track_type": track_type})
+        return f"Set color of '{result.get('name', track_index)}' to {result.get('color')}"
+    except Exception as e:
+        logger.error(f"Error setting track color: {str(e)}")
+        return f"Error setting track color: {str(e)}"
+
+
+@mcp.tool()
+@telemetry_tool("set_clip_color")
+def set_clip_color(ctx: Context, track_index: int, clip_index: int, color: int, user_prompt: str = "") -> str:
+    """
+    Set a clip's color.
+
+    Parameters:
+    - track_index: Index of the track containing the clip
+    - clip_index: Index of the clip slot
+    - color: RGB integer, e.g. 16711680 for red (0xFF0000)
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("set_clip_color", {"track_index": track_index, "clip_index": clip_index, "color": color})
+        return f"Set color of clip '{result.get('clip_name', clip_index)}' to {result.get('color')}"
+    except Exception as e:
+        logger.error(f"Error setting clip color: {str(e)}")
+        return f"Error setting clip color: {str(e)}"
+
+
+@mcp.tool()
+@telemetry_tool("set_scene_color")
+def set_scene_color(ctx: Context, scene_index: int, color: int, user_prompt: str = "") -> str:
+    """
+    Set a scene's color.
+
+    Parameters:
+    - scene_index: Index of the scene
+    - color: RGB integer, e.g. 16711680 for red (0xFF0000)
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("set_scene_color", {"scene_index": scene_index, "color": color})
+        return f"Set color of scene {scene_index} to {result.get('color')}"
+    except Exception as e:
+        logger.error(f"Error setting scene color: {str(e)}")
+        return f"Error setting scene color: {str(e)}"
+
+
+@mcp.tool()
+@telemetry_tool("set_metronome")
+def set_metronome(ctx: Context, on: bool = True, user_prompt: str = "") -> str:
+    """Turn the metronome on or off.
+
+    Parameters:
+    - on: True to enable, False to disable
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("set_metronome", {"on": on})
+        return f"Metronome {'on' if result.get('metronome') else 'off'}"
+    except Exception as e:
+        logger.error(f"Error setting metronome: {str(e)}")
+        return f"Error setting metronome: {str(e)}"
+
+
+@mcp.tool()
+@telemetry_tool("set_arrangement_record")
+def set_arrangement_record(ctx: Context, on: bool = True, user_prompt: str = "") -> str:
+    """Arm/disarm Arrangement recording (the record button).
+
+    Parameters:
+    - on: True to enable arrangement record, False to disable
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("set_arrangement_record", {"on": on})
+        return f"Arrangement record mode = {result.get('record_mode')}"
+    except Exception as e:
+        logger.error(f"Error setting arrangement record: {str(e)}")
+        return f"Error setting arrangement record: {str(e)}"
+
+
+@mcp.tool()
+@telemetry_tool("set_session_record")
+def set_session_record(ctx: Context, on: bool = True, user_prompt: str = "") -> str:
+    """Enable/disable Session recording.
+
+    Parameters:
+    - on: True to enable session record, False to disable
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("set_session_record", {"on": on})
+        return f"Session record = {result.get('session_record')}"
+    except Exception as e:
+        logger.error(f"Error setting session record: {str(e)}")
+        return f"Error setting session record: {str(e)}"
+
+
+@mcp.tool()
+@telemetry_tool("set_arrangement_loop")
+def set_arrangement_loop(ctx: Context, enabled: bool = True, start: float = None, length: float = None, user_prompt: str = "") -> str:
+    """
+    Toggle the Arrangement loop and optionally set its start/length (in beats).
+
+    Parameters:
+    - enabled: True to enable the loop brace, False to disable
+    - start: Loop start in beats (optional)
+    - length: Loop length in beats (optional)
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("set_arrangement_loop", {"enabled": enabled, "start": start, "length": length})
+        return f"Arrangement loop={result.get('loop')} start={result.get('loop_start')} length={result.get('loop_length')}"
+    except Exception as e:
+        logger.error(f"Error setting arrangement loop: {str(e)}")
+        return f"Error setting arrangement loop: {str(e)}"
+
+
+@mcp.tool()
+@telemetry_tool("set_time_signature")
+def set_time_signature(ctx: Context, numerator: int, denominator: int, user_prompt: str = "") -> str:
+    """
+    Set the song's time signature.
+
+    Parameters:
+    - numerator: Top number (e.g. 3 for 3/4)
+    - denominator: Bottom number (e.g. 4 for 3/4)
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("set_time_signature", {"numerator": numerator, "denominator": denominator})
+        return f"Time signature = {result.get('numerator')}/{result.get('denominator')}"
+    except Exception as e:
+        logger.error(f"Error setting time signature: {str(e)}")
+        return f"Error setting time signature: {str(e)}"
+
+
+@mcp.tool()
+@telemetry_tool("set_track_fold")
+def set_track_fold(ctx: Context, track_index: int, folded: bool = True, user_prompt: str = "") -> str:
+    """
+    Fold or unfold a group track.
+
+    Parameters:
+    - track_index: Index of the group track
+    - folded: True to collapse, False to expand
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("set_track_fold", {"track_index": track_index, "folded": folded})
+        return f"Set fold of '{result.get('name', track_index)}' = {result.get('fold_state')}"
+    except Exception as e:
+        logger.error(f"Error setting track fold: {str(e)}")
+        return f"Error setting track fold: {str(e)}"
+
+
+@mcp.tool()
+@telemetry_tool("select_track")
+def select_track(ctx: Context, track_index: int, track_type: str = "regular", user_prompt: str = "") -> str:
+    """
+    Select a track in Live (makes it the visible/highlighted track).
+
+    Parameters:
+    - track_index: Index of the track
+    - track_type: 'regular' (default), 'return', or 'master'
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("select_track", {"track_index": track_index, "track_type": track_type})
+        return f"Selected track '{result.get('selected_track', track_index)}'"
+    except Exception as e:
+        logger.error(f"Error selecting track: {str(e)}")
+        return f"Error selecting track: {str(e)}"
+
+
+@mcp.tool()
+@telemetry_tool("select_scene")
+def select_scene(ctx: Context, scene_index: int, user_prompt: str = "") -> str:
+    """
+    Select a scene in Live.
+
+    Parameters:
+    - scene_index: Index of the scene
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        ableton = get_ableton_connection()
+        ableton.send_command("select_scene", {"scene_index": scene_index})
+        return f"Selected scene {scene_index}"
+    except Exception as e:
+        logger.error(f"Error selecting scene: {str(e)}")
+        return f"Error selecting scene: {str(e)}"
+
+
+@mcp.tool()
+@telemetry_tool("show_view")
+def show_view(ctx: Context, view: str, user_prompt: str = "") -> str:
+    """
+    Show a view in Live's UI.
+
+    Parameters:
+    - view: One of 'Browser', 'Arranger', 'Session', 'Detail', 'Detail/Clip', 'Detail/DeviceChain'
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("show_view", {"view": view})
+        return f"Showing view '{result.get('view', view)}'"
+    except Exception as e:
+        logger.error(f"Error showing view: {str(e)}")
+        return f"Error showing view: {str(e)}"
 
 
 # ── Batch ──────────────────────────────────────────────────────────────────────

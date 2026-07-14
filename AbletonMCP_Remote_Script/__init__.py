@@ -228,6 +228,10 @@ class AbletonMCP(ControlSurface):
         "set_track_input_routing", "set_track_output_routing",
         "set_clip_envelope", "set_clip_mixer_envelope", "clear_clip_envelope",
         "undo", "redo", "capture_midi",
+        "set_track_color", "set_clip_color", "set_scene_color",
+        "set_metronome", "set_arrangement_record", "set_session_record",
+        "set_arrangement_loop", "set_time_signature", "set_track_fold",
+        "select_track", "select_scene", "show_view",
         "switch_to_arrangement_view", "set_current_song_time",
         "duplicate_session_clip_to_arrangement",
     ])
@@ -411,6 +415,34 @@ class AbletonMCP(ControlSurface):
             return self._redo()
         elif command_type == "capture_midi":
             return self._capture_midi()
+        # Colors, recording/transport, selection & view
+        elif command_type == "set_track_color":
+            return self._set_track_color(params.get("track_index", 0), params.get("color", 0),
+                                         params.get("track_type", "regular"))
+        elif command_type == "set_clip_color":
+            return self._set_clip_color(params.get("track_index", 0), params.get("clip_index", 0),
+                                        params.get("color", 0))
+        elif command_type == "set_scene_color":
+            return self._set_scene_color(params.get("scene_index", 0), params.get("color", 0))
+        elif command_type == "set_metronome":
+            return self._set_metronome(params.get("on", True))
+        elif command_type == "set_arrangement_record":
+            return self._set_arrangement_record(params.get("on", True))
+        elif command_type == "set_session_record":
+            return self._set_session_record(params.get("on", True))
+        elif command_type == "set_arrangement_loop":
+            return self._set_arrangement_loop(params.get("enabled", True),
+                                              params.get("start", None), params.get("length", None))
+        elif command_type == "set_time_signature":
+            return self._set_time_signature(params.get("numerator", 4), params.get("denominator", 4))
+        elif command_type == "set_track_fold":
+            return self._set_track_fold(params.get("track_index", 0), params.get("folded", True))
+        elif command_type == "select_track":
+            return self._select_track(params.get("track_index", 0), params.get("track_type", "regular"))
+        elif command_type == "select_scene":
+            return self._select_scene(params.get("scene_index", 0))
+        elif command_type == "show_view":
+            return self._show_view(params.get("view", "Session"))
         # Arrangement view
         elif command_type == "switch_to_arrangement_view":
             return self._switch_to_arrangement_view()
@@ -1784,6 +1816,124 @@ class AbletonMCP(ControlSurface):
             return {"captured": True}
         except Exception as e:
             self.log_message("Error capturing MIDI: " + str(e))
+            raise
+
+    # ── Colors, recording/transport, selection & view ─────────────────────────
+
+    def _set_track_color(self, track_index, color, track_type="regular"):
+        try:
+            track = self._get_track_by_index(track_index, track_type)
+            track.color = int(color)
+            return {"name": track.name, "color": track.color}
+        except Exception as e:
+            self.log_message("Error setting track color: " + str(e))
+            raise
+
+    def _set_clip_color(self, track_index, clip_index, color):
+        try:
+            clip = self._get_clip(track_index, clip_index)
+            clip.color = int(color)
+            return {"clip_name": clip.name, "color": clip.color}
+        except Exception as e:
+            self.log_message("Error setting clip color: " + str(e))
+            raise
+
+    def _set_scene_color(self, scene_index, color):
+        try:
+            if scene_index < 0 or scene_index >= len(self._song.scenes):
+                raise IndexError("Scene index out of range")
+            scene = self._song.scenes[scene_index]
+            scene.color = int(color)
+            return {"index": scene_index, "color": scene.color}
+        except Exception as e:
+            self.log_message("Error setting scene color: " + str(e))
+            raise
+
+    def _set_metronome(self, on):
+        try:
+            self._song.metronome = bool(on)
+            return {"metronome": bool(self._song.metronome)}
+        except Exception as e:
+            self.log_message("Error setting metronome: " + str(e))
+            raise
+
+    def _set_arrangement_record(self, on):
+        try:
+            # record_mode updates on the next tick, so report the requested state
+            # rather than an immediately-stale read-back.
+            self._song.record_mode = 1 if on else 0
+            return {"record_mode": 1 if on else 0}
+        except Exception as e:
+            self.log_message("Error setting arrangement record: " + str(e))
+            raise
+
+    def _set_session_record(self, on):
+        try:
+            self._song.session_record = bool(on)
+            return {"session_record": bool(self._song.session_record)}
+        except Exception as e:
+            self.log_message("Error setting session record: " + str(e))
+            raise
+
+    def _set_arrangement_loop(self, enabled, start=None, length=None):
+        try:
+            self._song.loop = bool(enabled)
+            if start is not None:
+                self._song.loop_start = float(start)
+            if length is not None:
+                self._song.loop_length = float(length)
+            return {"loop": bool(self._song.loop), "loop_start": self._song.loop_start,
+                    "loop_length": self._song.loop_length}
+        except Exception as e:
+            self.log_message("Error setting arrangement loop: " + str(e))
+            raise
+
+    def _set_time_signature(self, numerator, denominator):
+        try:
+            self._song.signature_numerator = int(numerator)
+            self._song.signature_denominator = int(denominator)
+            return {"numerator": self._song.signature_numerator,
+                    "denominator": self._song.signature_denominator}
+        except Exception as e:
+            self.log_message("Error setting time signature: " + str(e))
+            raise
+
+    def _set_track_fold(self, track_index, folded):
+        try:
+            track = self._get_track_by_index(track_index, "regular")
+            if not getattr(track, "is_foldable", False):
+                raise ValueError("Track %d is not a group/foldable track" % track_index)
+            track.fold_state = 1 if folded else 0
+            return {"name": track.name, "fold_state": int(track.fold_state)}
+        except Exception as e:
+            self.log_message("Error setting track fold: " + str(e))
+            raise
+
+    def _select_track(self, track_index, track_type="regular"):
+        try:
+            track = self._get_track_by_index(track_index, track_type)
+            self._song.view.selected_track = track
+            return {"selected_track": track.name}
+        except Exception as e:
+            self.log_message("Error selecting track: " + str(e))
+            raise
+
+    def _select_scene(self, scene_index):
+        try:
+            if scene_index < 0 or scene_index >= len(self._song.scenes):
+                raise IndexError("Scene index out of range")
+            self._song.view.selected_scene = self._song.scenes[scene_index]
+            return {"selected_scene_index": scene_index}
+        except Exception as e:
+            self.log_message("Error selecting scene: " + str(e))
+            raise
+
+    def _show_view(self, view):
+        try:
+            self.application().view.show_view(view)
+            return {"view": view}
+        except Exception as e:
+            self.log_message("Error showing view: " + str(e))
             raise
 
     # ── Browser implementations ───────────────────────────────────────────────
