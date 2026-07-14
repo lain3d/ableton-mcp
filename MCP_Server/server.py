@@ -139,6 +139,7 @@ class AbletonConnection:
             "set_metronome", "set_arrangement_record", "set_session_record",
             "set_arrangement_loop", "set_time_signature", "set_track_fold",
             "select_track", "select_scene", "show_view",
+            "subscribe", "unsubscribe",
             # Arrangement view commands
             "switch_to_arrangement_view", "set_current_song_time",
             "duplicate_session_clip_to_arrangement"
@@ -2082,6 +2083,101 @@ def show_view(ctx: Context, view: str, user_prompt: str = "") -> str:
     except Exception as e:
         logger.error(f"Error showing view: {str(e)}")
         return f"Error showing view: {str(e)}"
+
+
+# ── State observers ─────────────────────────────────────────────────────────────
+
+@mcp.tool()
+@telemetry_tool("subscribe")
+def subscribe(ctx: Context, targets: List[str], user_prompt: str = "") -> str:
+    """
+    Start observing Live for changes, so you can react to what the user does.
+
+    Live-side listeners record changes into a buffer that you drain with
+    poll_events (the connection stays request/response — nothing is pushed at
+    you). Subscribe once, then call poll_events whenever you want to see what
+    changed.
+
+    Available targets:
+    - 'transport'   — play/stop, tempo, metronome, loop on/off, time signature
+    - 'selection'   — selected track / selected scene
+    - 'tracks'      — a track was added or removed (reports new count)
+    - 'scenes'      — a scene was added or removed (reports new count)
+    - 'detail_clip' — the clip shown in Live's detail view changed
+
+    Parameters:
+    - targets: List of target names to subscribe to
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("subscribe", {"targets": targets})
+        return f"Subscribed: {result.get('subscribed')} | active: {result.get('active')}"
+    except Exception as e:
+        logger.error(f"Error subscribing: {str(e)}")
+        return f"Error subscribing: {str(e)}"
+
+
+@mcp.tool()
+@telemetry_tool("unsubscribe")
+def unsubscribe(ctx: Context, targets: List[str], user_prompt: str = "") -> str:
+    """
+    Stop observing the given targets (removes their Live listeners).
+
+    Parameters:
+    - targets: List of target names to unsubscribe from
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("unsubscribe", {"targets": targets})
+        return f"Unsubscribed: {result.get('unsubscribed')} | active: {result.get('active')}"
+    except Exception as e:
+        logger.error(f"Error unsubscribing: {str(e)}")
+        return f"Error unsubscribing: {str(e)}"
+
+
+@mcp.tool()
+@telemetry_tool("poll_events")
+def poll_events(ctx: Context, max_events: int = 100, clear: bool = True, user_prompt: str = "") -> str:
+    """
+    Drain buffered change events collected since the last poll (see subscribe).
+
+    Returns a list of events, each with a 'type' (e.g. tempo, is_playing,
+    selected_track, tracks, detail_clip), the relevant value(s), a sequence
+    number, and a timestamp. Newest changes have the highest 'seq'.
+
+    Parameters:
+    - max_events: Maximum number of events to return this call (default 100)
+    - clear: Remove the returned events from the buffer (default True)
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("poll_events", {"max_events": max_events, "clear": clear})
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        logger.error(f"Error polling events: {str(e)}")
+        return f"Error polling events: {str(e)}"
+
+
+@mcp.tool()
+@telemetry_tool("list_subscriptions")
+def list_subscriptions(ctx: Context, user_prompt: str = "") -> str:
+    """
+    List active observer subscriptions, the available targets, and how many
+    events are currently buffered.
+
+    Parameters:
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("list_subscriptions", {})
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        logger.error(f"Error listing subscriptions: {str(e)}")
+        return f"Error listing subscriptions: {str(e)}"
 
 
 # ── Batch ──────────────────────────────────────────────────────────────────────

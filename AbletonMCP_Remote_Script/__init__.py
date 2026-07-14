@@ -41,7 +41,14 @@ class AbletonMCP(ControlSurface):
         
         # Cache the song reference for easier access
         self._song = self.song()
-        
+
+        # State-observer buffer: Live listeners push change events here and the
+        # client drains them with poll_events (keeps request/response framing).
+        self._event_queue = []
+        self._event_lock = threading.Lock()
+        self._event_seq = 0
+        self._subscriptions = {}  # target -> [(obj, remove_method_name, callback)]
+
         # Start the socket server
         self.start_server()
         
@@ -54,7 +61,13 @@ class AbletonMCP(ControlSurface):
         """Called when Ableton closes or the control surface is removed"""
         self.log_message("AbletonMCP disconnecting...")
         self.running = False
-        
+
+        # Remove any Live listeners we registered.
+        try:
+            self._unsubscribe_all()
+        except Exception:
+            pass
+
         # Stop the server
         if self.server:
             try:
@@ -232,6 +245,7 @@ class AbletonMCP(ControlSurface):
         "set_metronome", "set_arrangement_record", "set_session_record",
         "set_arrangement_loop", "set_time_signature", "set_track_fold",
         "select_track", "select_scene", "show_view",
+        "subscribe", "unsubscribe",
         "switch_to_arrangement_view", "set_current_song_time",
         "duplicate_session_clip_to_arrangement",
     ])
@@ -443,6 +457,15 @@ class AbletonMCP(ControlSurface):
             return self._select_scene(params.get("scene_index", 0))
         elif command_type == "show_view":
             return self._show_view(params.get("view", "Session"))
+        # State observers
+        elif command_type == "subscribe":
+            return self._subscribe(params.get("targets", []))
+        elif command_type == "unsubscribe":
+            return self._unsubscribe(params.get("targets", []))
+        elif command_type == "poll_events":
+            return self._poll_events(params.get("max_events", 100), params.get("clear", True))
+        elif command_type == "list_subscriptions":
+            return self._list_subscriptions()
         # Arrangement view
         elif command_type == "switch_to_arrangement_view":
             return self._switch_to_arrangement_view()
@@ -1935,6 +1958,134 @@ class AbletonMCP(ControlSurface):
         except Exception as e:
             self.log_message("Error showing view: " + str(e))
             raise
+
+    # ── State observers ───────────────────────────────────────────────────────
+    #
+    # Live listeners fire on the main thread and push change events into a
+    # buffer; the client drains them with poll_events. This keeps the socket
+    # strictly request/response (no unsolicited pushes to demultiplex).
+
+    OBSERVER_TARGETS = ("transport", "selection", "tracks", "scenes", "detail_clip")
+
+    def _push_event(self, ev):
+        with self._event_lock:
+            self._event_seq += 1
+            ev["seq"] = self._event_seq
+            ev["time"] = time.time()
+            self._event_queue.append(ev)
+            if len(self._event_queue) > 500:
+                # Drop oldest so a client that stops polling can't grow it forever.
+                self._event_queue = self._event_queue[-500:]
+
+    def _add_listener(self, target, obj, name, fn):
+        """Register a Live listener, wrapping it so a callback error can't break
+        Live, and remembering how to remove it later."""
+        def safe():
+            try:
+                fn()
+            except Exception as e:
+                self.log_message("Observer '%s' callback error: %s" % (name, str(e)))
+        getattr(obj, "add_%s_listener" % name)(safe)
+        self._subscriptions.setdefault(target, []).append(
+            (obj, "remove_%s_listener" % name, safe))
+
+    def _track_locator(self, track):
+        for i, t in enumerate(self._song.tracks):
+            if t == track:
+                return i, "regular"
+        for i, t in enumerate(self._song.return_tracks):
+            if t == track:
+                return i, "return"
+        if track == self._song.master_track:
+            return -1, "master"
+        return -1, "unknown"
+
+    def _subscribe(self, targets):
+        song = self._song
+        view = song.view
+        added = []
+        for target in targets:
+            if target in self._subscriptions:
+                continue  # already active
+            if target == "transport":
+                self._add_listener(target, song, "is_playing",
+                                   lambda: self._push_event({"type": "is_playing", "value": song.is_playing}))
+                self._add_listener(target, song, "tempo",
+                                   lambda: self._push_event({"type": "tempo", "value": song.tempo}))
+                self._add_listener(target, song, "metronome",
+                                   lambda: self._push_event({"type": "metronome", "value": bool(song.metronome)}))
+                self._add_listener(target, song, "loop",
+                                   lambda: self._push_event({"type": "loop", "value": bool(song.loop)}))
+                self._add_listener(target, song, "signature_numerator",
+                                   lambda: self._push_event({"type": "signature",
+                                                             "numerator": song.signature_numerator,
+                                                             "denominator": song.signature_denominator}))
+            elif target == "selection":
+                self._add_listener(target, view, "selected_track", self._on_selected_track)
+                self._add_listener(target, view, "selected_scene", self._on_selected_scene)
+            elif target == "tracks":
+                self._add_listener(target, song, "tracks",
+                                   lambda: self._push_event({"type": "tracks", "count": len(song.tracks)}))
+            elif target == "scenes":
+                self._add_listener(target, song, "scenes",
+                                   lambda: self._push_event({"type": "scenes", "count": len(song.scenes)}))
+            elif target == "detail_clip":
+                self._add_listener(target, view, "detail_clip", self._on_detail_clip)
+            else:
+                raise ValueError("Unknown observer target '%s' (valid: %s)"
+                                 % (target, ", ".join(self.OBSERVER_TARGETS)))
+            added.append(target)
+        return {"subscribed": added, "active": list(self._subscriptions.keys())}
+
+    def _on_selected_track(self):
+        tr = self._song.view.selected_track
+        idx, ttype = self._track_locator(tr)
+        self._push_event({"type": "selected_track", "name": tr.name,
+                          "index": idx, "track_type": ttype})
+
+    def _on_selected_scene(self):
+        sc = self._song.view.selected_scene
+        idx = -1
+        for i, s in enumerate(self._song.scenes):
+            if s == sc:
+                idx = i
+                break
+        self._push_event({"type": "selected_scene", "index": idx})
+
+    def _on_detail_clip(self):
+        clip = self._song.view.detail_clip
+        self._push_event({"type": "detail_clip",
+                          "name": clip.name if clip else None})
+
+    def _unsubscribe(self, targets):
+        removed = []
+        for target in targets:
+            subs = self._subscriptions.pop(target, None)
+            if subs:
+                for (obj, remove_name, cb) in subs:
+                    try:
+                        getattr(obj, remove_name)(cb)
+                    except Exception:
+                        pass
+                removed.append(target)
+        return {"unsubscribed": removed, "active": list(self._subscriptions.keys())}
+
+    def _unsubscribe_all(self):
+        return self._unsubscribe(list(self._subscriptions.keys()))
+
+    def _poll_events(self, max_events=100, clear=True):
+        with self._event_lock:
+            evs = self._event_queue[:max_events]
+            if clear:
+                self._event_queue = self._event_queue[len(evs):]
+            remaining = len(self._event_queue)
+        return {"events": evs, "returned": len(evs), "remaining": remaining,
+                "active_subscriptions": list(self._subscriptions.keys())}
+
+    def _list_subscriptions(self):
+        return {"active": list(self._subscriptions.keys()),
+                "available": list(self.OBSERVER_TARGETS),
+                "buffered_events": len(self._event_queue)}
 
     # ── Browser implementations ───────────────────────────────────────────────
 
