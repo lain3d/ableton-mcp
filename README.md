@@ -213,16 +213,25 @@ newly possible, here's an honest picture of what you can ask for.
   (state observers: subscribe + poll for your changes)
 - "What's in my session right now?" / "Read back the notes in this clip"
 
-**Editing & analysis**
-- "Quantize the hats to 1/16 and shorten their release" 
-- "Crop this clip to its loop" · "Nudge the warp marker at beat 4"
-- "How loud is the master right now?" (real audio analysis via the Max for Live
-  device — see `M4L/`)
+**Editing**
+- "Quantize the hats to 1/16 and shorten their release"
+- "Crop this clip to its loop" · "Add a warp marker at beat 4 and pull the
+  downbeat onto the grid" (add/move/remove warp markers)
+- "Colour the drum tracks red and drop a locator on the drop"
+
+**Max for Live — into the actual signal (see `M4L/`)**
+- "How loud / what pitch is this track right now?" (real audio analysis —
+  peak + fundamental frequency)
+- "Play a C-minor arpeggio through my synth" (generate MIDI notes/CC into a
+  track in real time)
+- "Make a sine tone at 440 Hz" (synthesize audio from nothing — the tool can
+  even measure its own output pitch to confirm)
 
 **Reality check — things it can't do (see Limitations):** it can't save or
-export/render your Set, generate raw audio from nothing (you supply samples),
-write MIDI CC lanes directly, or draw perfectly smooth automation curves
-(automation is stepped, or recorded).
+export/render your Set, and it can't write MIDI CC *lanes into clips* directly
+(generate CC live via M4L instead). Clip automation is a fine staircase that
+reads as smooth (`linear`/`smooth` shapes), and song-level moves like tempo or
+master fades are *recorded* rather than drawn.
 
 
 ## Troubleshooting
