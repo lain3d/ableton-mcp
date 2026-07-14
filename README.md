@@ -154,9 +154,12 @@ and workflow control (60 tools in total). Grouped by area:
 **Scenes, transport & workflow**
 - Create, duplicate, delete, rename, and fire scenes
 - Playback/transport control; move the arrangement playhead; build arrangements
-- Undo / redo / capture MIDI; change tempo
+- Undo / redo / capture MIDI; change tempo and time signature
+- Metronome, arrangement/session record, arrangement loop region
+- Colors (track / clip / scene); fold group tracks; select tracks/scenes and
+  switch Live's views
 - `batch` — run many operations in a single round-trip (~13× faster than
-  issuing them one at a time)
+  issuing them one at a time); the whole batch is a single undo step
 
 ## Example Commands
 
@@ -216,20 +219,19 @@ be added here:
   clips or edit arrangement automation.
 - **No warp-marker editing** (only warp on/off + mode) and **no device
   reordering** within a chain.
+- **Can't create group tracks** — the API can fold/unfold existing groups but
+  has no call to group tracks in the first place.
 
 ### Roadmap (feasible next steps)
 
 These are supported by the API and are good candidates for future work:
 
-- Track grouping (group tracks, fold/unfold) and colors (track/clip/scene)
-- Recording controls (session/arrangement record, overdub, metronome,
-  arrangement loop region, punch in/out)
-- Tempo automation and time-signature changes
-- Selection / view control (select clip or track, show detail view)
 - **State observers** — push notifications when the user changes something in
   Live, enabling reactive workflows (the server is currently request/response
-  only)
+  only). This is the biggest remaining architectural step.
+- Overdub and punch in/out; tempo automation in the arrangement
 - Groove pool, crossfader assignment, and finer send/return routing
+- Simpler/Sampler sample loading by path
 
 ## Contributing
 
