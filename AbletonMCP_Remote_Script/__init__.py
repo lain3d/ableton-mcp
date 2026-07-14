@@ -1965,7 +1965,8 @@ class AbletonMCP(ControlSurface):
     # buffer; the client drains them with poll_events. This keeps the socket
     # strictly request/response (no unsolicited pushes to demultiplex).
 
-    OBSERVER_TARGETS = ("transport", "selection", "tracks", "scenes", "detail_clip")
+    OBSERVER_TARGETS = ("transport", "selection", "tracks", "scenes", "detail_clip",
+                        "playing_slots", "track:<index>")
 
     def _push_event(self, ev):
         with self._event_lock:
@@ -2031,11 +2032,59 @@ class AbletonMCP(ControlSurface):
                                    lambda: self._push_event({"type": "scenes", "count": len(song.scenes)}))
             elif target == "detail_clip":
                 self._add_listener(target, view, "detail_clip", self._on_detail_clip)
+            elif target == "playing_slots":
+                # Session clip play/queue state for every current regular track.
+                for i, tr in enumerate(song.tracks):
+                    self._add_track_slot_listeners(target, tr, i)
+            elif target.startswith("track:"):
+                try:
+                    idx = int(target.split(":", 1)[1])
+                except (ValueError, IndexError):
+                    raise ValueError("Bad track target '%s' (use 'track:<index>')" % target)
+                if idx < 0 or idx >= len(song.tracks):
+                    raise IndexError("Track index out of range for '%s'" % target)
+                self._add_track_listeners(target, song.tracks[idx], idx)
             else:
                 raise ValueError("Unknown observer target '%s' (valid: %s)"
                                  % (target, ", ".join(self.OBSERVER_TARGETS)))
             added.append(target)
         return {"subscribed": added, "active": list(self._subscriptions.keys())}
+
+    def _add_track_listeners(self, target, track, req_index):
+        """Observe a track's name, mixer state, and session play/queue slots.
+
+        Listeners bind to the track object, so they keep working if the track is
+        reordered; each event reports the track's current index."""
+        def emit(change, value=None):
+            cur, ttype = self._track_locator(track)
+            ev = {"type": "track", "requested_index": req_index, "index": cur,
+                  "name": track.name, "change": change}
+            if value is not None:
+                ev["value"] = value
+            self._push_event(ev)
+        self._add_listener(target, track, "name", lambda: emit("name"))
+        self._add_listener(target, track, "mute", lambda: emit("mute", track.mute))
+        self._add_listener(target, track, "solo", lambda: emit("solo", track.solo))
+        if getattr(track, "can_be_armed", False):
+            self._add_listener(target, track, "arm", lambda: emit("arm", track.arm))
+        md = track.mixer_device
+        self._add_listener(target, md.volume, "value", lambda: emit("volume", md.volume.value))
+        self._add_listener(target, md.panning, "value", lambda: emit("panning", md.panning.value))
+        self._add_listener(target, track, "playing_slot_index",
+                           lambda: emit("playing_slot", track.playing_slot_index))
+        self._add_listener(target, track, "fired_slot_index",
+                           lambda: emit("fired_slot", track.fired_slot_index))
+
+    def _add_track_slot_listeners(self, target, track, req_index):
+        def emit(change, value):
+            cur, ttype = self._track_locator(track)
+            self._push_event({"type": "playing_slot", "requested_index": req_index,
+                              "index": cur, "name": track.name,
+                              "change": change, "value": value})
+        self._add_listener(target, track, "playing_slot_index",
+                           lambda: emit("playing_slot", track.playing_slot_index))
+        self._add_listener(target, track, "fired_slot_index",
+                           lambda: emit("fired_slot", track.fired_slot_index))
 
     def _on_selected_track(self):
         tr = self._song.view.selected_track
@@ -2086,6 +2135,7 @@ class AbletonMCP(ControlSurface):
         return {"active": list(self._subscriptions.keys()),
                 "available": list(self.OBSERVER_TARGETS),
                 "buffered_events": len(self._event_queue)}
+
 
     # ── Browser implementations ───────────────────────────────────────────────
 

@@ -162,9 +162,11 @@ and workflow control (60 tools in total). Grouped by area:
   issuing them one at a time); the whole batch is a single undo step
 
 **Reacting to the user (state observers)**
-- `subscribe` to Live changes (transport, selection, track/scene add-remove,
-  detail clip) and drain them with `poll_events` — so the assistant can respond
-  to what you do in Live, while the connection stays request/response
+- `subscribe` to Live changes and drain them with `poll_events` — so the
+  assistant can respond to what you do in Live, while the connection stays
+  request/response. Targets: transport, selection, track/scene add-remove,
+  detail clip, per-track mixer (`track:<index>`), and session clip play/queue
+  state (`playing_slots`)
 
 ## Example Commands
 
@@ -219,6 +221,10 @@ be added here:
   segments (a staircase), not linear/curved ramps.
 - **No MIDI CC envelopes in clips** — clip envelopes are keyed to device
   parameters; raw MIDI CC lanes (mod wheel, etc.) aren't exposed.
+- **No tempo automation** — the Song Tempo parameter lives on the master track,
+  and the LOM rejects automating another track's parameter from a clip
+  (`parameter belongs to another track`); there is no arrangement-lane
+  automation API for song-level parameters either.
 - **Arrangement editing is limited** — you can push Session clips to the
   Arrangement and move the playhead, but not move/resize/delete arrangement
   clips or edit arrangement automation.
@@ -231,10 +237,9 @@ be added here:
 
 These are supported by the API and are good candidates for future work:
 
-- Overdub and punch in/out; tempo automation in the arrangement
+- Overdub and punch in/out
 - Groove pool, crossfader assignment, and finer send/return routing
 - Simpler/Sampler sample loading by path
-- More observer targets (per-track mixer changes, clip-slot playing state)
 
 ## Contributing
 
