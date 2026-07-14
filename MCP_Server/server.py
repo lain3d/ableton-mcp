@@ -52,10 +52,10 @@ class AbletonConnection:
             finally:
                 self.sock = None
 
-    def receive_full_response(self, sock, buffer_size=8192):
+    def receive_full_response(self, sock, buffer_size=8192, timeout=15.0):
         """Receive the complete response, potentially in multiple chunks"""
         chunks = []
-        sock.settimeout(15.0)  # Increased timeout for operations that might take longer
+        sock.settimeout(timeout)  # Wider for slow operations (e.g. audio import, batch)
         
         try:
             while True:
@@ -147,15 +147,20 @@ class AbletonConnection:
             self.sock.sendall(json.dumps(command).encode('utf-8'))
             logger.info(f"Command sent, waiting for response...")
             
-            # Set timeout based on command type
-            if command_type in long_running_commands:
+            # Set timeout based on command type. A batch scales with the work it
+            # queues (plus any audio-import budgets inside it).
+            if command_type == "batch":
+                ops = (params or {}).get("operations", [])
+                timeout = max(60.0, 2.0 * len(ops) + sum(
+                    long_running_commands.get(o.get("type", ""), 0.0) for o in ops))
+            elif command_type in long_running_commands:
                 timeout = long_running_commands[command_type]
             else:
                 timeout = 15.0 if is_modifying_command else 10.0
             self.sock.settimeout(timeout)
 
             # Receive the response
-            response_data = self.receive_full_response(self.sock)
+            response_data = self.receive_full_response(self.sock, timeout=timeout)
             logger.info(f"Received {len(response_data)} bytes of data")
 
             # Parse the response
@@ -1660,6 +1665,46 @@ def capture_midi(ctx: Context, user_prompt: str = "") -> str:
     except Exception as e:
         logger.error(f"Error capturing MIDI: {str(e)}")
         return f"Error capturing MIDI: {str(e)}"
+
+
+# ── Batch ──────────────────────────────────────────────────────────────────────
+
+@mcp.tool()
+@telemetry_tool("batch")
+def batch(ctx: Context, operations: List[Dict[str, Any]], stop_on_error: bool = False, user_prompt: str = "") -> str:
+    """
+    Run many Ableton operations in a single round-trip. Much faster than calling
+    tools one at a time when building or editing a lot at once (tracks, clips,
+    notes, mixer, automation, etc.).
+
+    Each operation is a dict: {"type": <command>, "params": {...}}, where <command>
+    is the underlying Ableton command name and params match that command. Common
+    command names mirror the individual tools, e.g.:
+      - "create_midi_track" {"index": -1}
+      - "create_audio_track" {"index": -1}
+      - "set_track_name" {"track_index": 0, "name": "Bass"}
+      - "create_clip" {"track_index": 0, "clip_index": 0, "length": 4.0}
+      - "add_notes_to_clip" {"track_index": 0, "clip_index": 0, "notes": [...]}
+      - "set_track_volume" {"track_index": 0, "value": 0.8}
+      - "set_device_parameter" {"track_index": 0, "device_index": 0, "parameter_name": "Frequency", "value": 0.5}
+      - "set_clip_envelope" {"track_index": 0, "clip_index": 0, "device_index": 0, "parameter_name": "Frequency", "points": [...]}
+    Read commands (e.g. "get_track_info", "get_device_parameters") are allowed too.
+
+    Operations run in order on Live's main thread. Each result is returned
+    individually, so one failure doesn't discard the others' outcomes.
+
+    Parameters:
+    - operations: List of {"type": command, "params": {...}} dicts
+    - stop_on_error: If True, stop at the first failing operation (default False)
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("batch", {"operations": operations, "stop_on_error": stop_on_error})
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        logger.error(f"Error running batch: {str(e)}")
+        return f"Error running batch: {str(e)}"
 
 
 # Main execution
