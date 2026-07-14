@@ -207,39 +207,97 @@ The system uses a simple JSON-based protocol over TCP sockets:
 - The shared client socket is serialized with a lock, so concurrent tool calls
   won't corrupt each other.
 
-### Limitations
+### Why the LOM constrains us (and where the UI gets more)
 
-Some things are **not possible through Ableton's Remote Script API** and won't
-be added here:
+Everything here goes through Ableton's **Live Object Model (LOM)** — the Python
+API exposed to MIDI Remote Scripts. Ableton's own UI is compiled C++ that talks
+to the audio engine directly; the LOM is a deliberately narrower, curated
+surface over that same engine. So the gap between "what the UI can do" and "what
+we can do" is almost always **"the engine supports it, but the LOM doesn't
+expose an object/setter for it"** — not a fundamental impossibility.
 
-- **No saving the Live Set** — the API exposes no save function. Save your work
-  yourself before extensive experimentation.
+Two recurring shapes explain most limits:
+
+1. **Automation is only reachable per-clip, per-track-parameter.** The only
+   automation entry point in the LOM is `Clip.automation_envelope(param)` /
+   `create_automation_envelope(param)`, and `param` must belong to the clip's
+   own track. The UI, by contrast, draws automation on **track-level arrangement
+   lanes**, which the LOM never surfaces as objects. Anything song-level (tempo,
+   groove) lives on the master track, which has **no clips** — so there's no clip
+   envelope to attach it to.
+2. **Envelopes are written as steps.** `Envelope.insert_step` writes flat
+   segments, so our envelopes come out as staircases; the UI can draw
+   linear/curved breakpoints with tension, which the LOM's write API doesn't
+   offer.
+
+### Limitations — genuinely blocked
+
+Verified against the running LOM (Live 12.3):
+
+- **No saving the Live Set** — the API exposes no save function.
 - **No audio rendering / export / bounce**, and no freeze/flatten.
 - **No raw audio generation or analysis** — you supply audio files; the tool
   places, warps, and mixes them, but can't synthesize or read sample data.
-- **Automation is stepped, not smooth** — envelopes are written as flat
-  segments (a staircase), not linear/curved ramps.
-- **No MIDI CC envelopes in clips** — clip envelopes are keyed to device
-  parameters; raw MIDI CC lanes (mod wheel, etc.) aren't exposed.
-- **No tempo automation** — the Song Tempo parameter lives on the master track,
-  and the LOM rejects automating another track's parameter from a clip
-  (`parameter belongs to another track`); there is no arrangement-lane
-  automation API for song-level parameters either.
-- **Arrangement editing is limited** — you can push Session clips to the
-  Arrangement and move the playhead, but not move/resize/delete arrangement
-  clips or edit arrangement automation.
+- **Automation is stepped, not smooth** (see above).
+- **No MIDI CC envelopes in clips** — `create_automation_envelope` needs a
+  *DeviceParameter*, and there is no MIDI-CC parameter object in the LOM to pass
+  it. Confirmed: a MIDI clip exposes `automation_envelope` but nothing that maps
+  to a raw CC lane.
 - **No warp-marker editing** (only warp on/off + mode) and **no device
   reordering** within a chain.
 - **Can't create group tracks** — the API can fold/unfold existing groups but
   has no call to group tracks in the first place.
 
+### Limitations — softer than they look (bypasses exist)
+
+Investigating the LOM turned up working paths around several things previously
+listed as hard limits:
+
+- **Tempo automation — recordable, not directly writable.** You can't attach a
+  Song-Tempo envelope to a clip (the master track has no clips). **But** the
+  Song-Tempo `DeviceParameter` *is* automatable, and its `automation_state` goes
+  from 0 → 1 when you: enable arrangement record, start playback, and change
+  `song.tempo` over time. Verified in this repo — the engine records the sweep
+  as real arrangement automation. So tempo automation is achievable via
+  **automation recording**, just not as a clean "write these points" call.
+- **Arrangement clip move/resize — actually possible.** An arrangement clip's
+  `position`, `start_marker`, and `end_marker` are all writable (only the
+  derived `start_time`/`end_time` are read-only). So moving and resizing
+  arrangement clips is directly implementable; the earlier "append-only"
+  characterization was wrong.
+- **Any parameter can be automated by recording**, not just tempo — the same
+  arrangement-record trick captures moves of any automatable `DeviceParameter`,
+  which is how the model could produce smooth/curved automation the direct
+  `insert_step` API can't write.
+
 ### Roadmap (feasible next steps)
 
-These are supported by the API and are good candidates for future work:
+Confirmed feasible against the LOM, in rough priority order:
 
+- **Arrangement clip editing** — move/resize/delete arrangement clips via
+  `position` / `start_marker` / `end_marker` (proven writable)
+- **Automation recording API** — a tool that arms arrangement record, plays,
+  and streams parameter/tempo changes to capture automation the direct envelope
+  API can't write (the tempo-automation bypass, generalized)
 - Overdub and punch in/out
 - Groove pool, crossfader assignment, and finer send/return routing
 - Simpler/Sampler sample loading by path
+
+### Roadmap — bypassing the harder limits
+
+Longer-term ideas for the things the LOM blocks outright, roughly hardest-last:
+
+- **MIDI CC lanes** — no LOM object exists, but a CC lane is just data in the
+  clip; a Max for Live device (which gets a richer API surface) loaded on the
+  track could bridge CC read/write that the Remote Script can't reach.
+- **Saving / export / render** — no LOM call, so this needs an out-of-band
+  route: UI automation (send Ctrl+S / trigger Export via the OS), or a Max for
+  Live / external tool. Inherently outside the socket protocol.
+- **Smooth automation curves** — `insert_step` only writes flats; recording
+  (above) is the practical workaround until/unless a curved-write path is found.
+- **Deeper engine access generally** — the ceiling above the LOM is a **Max for
+  Live** device (broader `live.*` API + direct DSP) or, further out, patching
+  the engine, which is out of scope for a Remote Script.
 
 ## Contributing
 

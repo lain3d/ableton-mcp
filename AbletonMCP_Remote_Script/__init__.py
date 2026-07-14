@@ -2136,7 +2136,6 @@ class AbletonMCP(ControlSurface):
                 "available": list(self.OBSERVER_TARGETS),
                 "buffered_events": len(self._event_queue)}
 
-
     # ── Browser implementations ───────────────────────────────────────────────
 
     def _get_browser_item(self, uri, path):
