@@ -49,6 +49,10 @@ class AbletonMCP(ControlSurface):
         self._event_seq = 0
         self._subscriptions = {}  # target -> [(obj, remove_method_name, callback)]
 
+        # Automation-recording state (arms arrangement record, plays, and writes
+        # parameter/tempo moves at their song-time points via a playhead listener).
+        self._autorec = None
+
         # Start the socket server
         self.start_server()
         
@@ -65,6 +69,11 @@ class AbletonMCP(ControlSurface):
         # Remove any Live listeners we registered.
         try:
             self._unsubscribe_all()
+        except Exception:
+            pass
+        try:
+            if self._autorec:
+                self._stop_automation_recording()
         except Exception:
             pass
 
@@ -246,6 +255,7 @@ class AbletonMCP(ControlSurface):
         "set_arrangement_loop", "set_time_signature", "set_track_fold",
         "select_track", "select_scene", "show_view",
         "subscribe", "unsubscribe",
+        "record_automation", "stop_automation_recording",
         "switch_to_arrangement_view", "set_current_song_time",
         "duplicate_session_clip_to_arrangement",
         "move_arrangement_clip", "set_arrangement_clip_markers",
@@ -468,6 +478,16 @@ class AbletonMCP(ControlSurface):
             return self._poll_events(params.get("max_events", 100), params.get("clear", True))
         elif command_type == "list_subscriptions":
             return self._list_subscriptions()
+        elif command_type == "record_automation":
+            return self._start_automation_recording(params.get("target", {}),
+                                                    params.get("points", []),
+                                                    params.get("start_time", None),
+                                                    params.get("stop_at", None),
+                                                    params.get("auto_stop", True))
+        elif command_type == "stop_automation_recording":
+            return self._stop_automation_recording()
+        elif command_type == "automation_recording_status":
+            return self._automation_recording_status()
         # Arrangement view
         elif command_type == "switch_to_arrangement_view":
             return self._switch_to_arrangement_view()
@@ -2293,6 +2313,151 @@ class AbletonMCP(ControlSurface):
         return {"active": list(self._subscriptions.keys()),
                 "available": list(self.OBSERVER_TARGETS),
                 "buffered_events": len(self._event_queue)}
+
+    # ── Automation recording ──────────────────────────────────────────────────
+    #
+    # The LOM only writes automation as per-clip envelopes for the clip's own
+    # track parameters. To reach things that can't (master/song params like
+    # tempo, or a continuous curve spanning clips), we do what a human does:
+    # arm Arrangement record, play, and move the parameter over time. Live
+    # captures the moves as real arrangement automation. We drive the moves from
+    # a current_song_time listener so the points land at their song-time beats.
+
+    def _autorec_resolve_setter(self, spec):
+        """Return (setter(value), describe) for an automation target spec."""
+        kind = spec.get("kind", "tempo")
+        if kind == "tempo":
+            song = self._song
+            def setter(v):
+                song.tempo = max(20.0, min(999.0, float(v)))
+            return setter, "song tempo"
+        elif kind == "device":
+            track = self._get_track_by_index(spec.get("track_index", 0),
+                                             spec.get("track_type", "regular"))
+            device = self._resolve_device(track, spec.get("device_index", 0),
+                                          spec.get("chain_index"), spec.get("chain_device_index"))
+            param = self._resolve_param_on_device(device, spec.get("parameter_index"),
+                                                  spec.get("parameter_name"))
+            def setter(v):
+                param.value = max(param.min, min(param.max, float(v)))
+            return setter, "%s.%s" % (device.name, param.name)
+        elif kind == "mixer":
+            track = self._get_track_by_index(spec.get("track_index", 0),
+                                             spec.get("track_type", "regular"))
+            param = self._mixer_param(track, spec.get("target", "volume"),
+                                      spec.get("send_index", 0))
+            def setter(v):
+                param.value = max(param.min, min(param.max, float(v)))
+            return setter, "%s mixer %s" % (track.name, spec.get("target", "volume"))
+        raise ValueError("Unknown automation kind '%s'" % kind)
+
+    def _start_automation_recording(self, spec, points, start_time=None,
+                                    stop_at=None, auto_stop=True):
+        if self._autorec is not None:
+            raise Exception("An automation recording is already in progress")
+        if not points:
+            raise ValueError("points is required")
+        setter, desc = self._autorec_resolve_setter(spec)
+        pts = sorted(({"time": float(p["time"]), "value": float(p["value"])}
+                      for p in points), key=lambda p: p["time"])
+        start = float(start_time) if start_time is not None else min(0.0, pts[0]["time"])
+        if start > pts[0]["time"]:
+            start = pts[0]["time"]
+        end = float(stop_at) if stop_at is not None else (pts[-1]["time"] + 1.0)
+
+        song = self._song
+        song.record_mode = 1                 # arm Arrangement record
+        song.current_song_time = start       # seek to the start
+        self._autorec = {"setter": setter, "points": pts, "next": 0,
+                         "end": end, "auto_stop": bool(auto_stop),
+                         "desc": desc, "start": start, "done": False}
+        song.add_current_song_time_listener(self._autorec_tick)
+        song.start_playing()
+        # Record the point(s) at/before the start once playback is rolling, so
+        # a breakpoint is written at the start position (setting while stopped
+        # wouldn't record). Deferred out of this command's context to be safe.
+        def _init_points():
+            rec = self._autorec
+            if not rec:
+                return
+            while rec["next"] < len(pts) and pts[rec["next"]]["time"] <= start:
+                try:
+                    setter(pts[rec["next"]]["value"])
+                except Exception:
+                    pass
+                rec["next"] += 1
+        self.schedule_message(1, _init_points)
+        # Estimate wall-clock duration so the client knows how long to wait.
+        tempo = song.tempo or 120.0
+        est = max(0.1, (end - start) / tempo * 60.0)
+        return {"recording": True, "target": desc, "start": start, "stop_at": end,
+                "point_count": len(pts), "estimated_seconds": round(est, 2)}
+
+    def _autorec_tick(self):
+        # Runs inside a current_song_time notification, where the Live API forbids
+        # mutating the model — so collect the values to write and defer them (and
+        # the stop) to the next message tick via schedule_message.
+        rec = self._autorec
+        if not rec or rec.get("done"):
+            return
+        try:
+            st = self._song.current_song_time
+            pts = rec["points"]
+            pending = []
+            while rec["next"] < len(pts) and st >= pts[rec["next"]]["time"]:
+                pending.append(pts[rec["next"]]["value"])
+                rec["next"] += 1
+            if pending:
+                setter = rec["setter"]
+                def _apply(vals=pending):
+                    for v in vals:
+                        try:
+                            setter(v)
+                        except Exception as e:
+                            self.log_message("Automation apply error: " + str(e))
+                self.schedule_message(0, _apply)
+            if rec["auto_stop"] and st >= rec["end"] and not rec.get("stopping"):
+                rec["stopping"] = True
+                self.schedule_message(0, self._stop_automation_recording)
+        except Exception as e:
+            self.log_message("Automation tick error: " + str(e))
+
+    def _stop_automation_recording(self):
+        rec = self._autorec
+        if rec is None:
+            return {"recording": False, "note": "no active recording"}
+        rec["done"] = True
+        try:
+            self._song.remove_current_song_time_listener(self._autorec_tick)
+        except Exception:
+            pass
+        try:
+            self._song.stop_playing()
+        except Exception:
+            pass
+        try:
+            self._song.record_mode = 0
+        except Exception:
+            pass
+        # After recording, params are "overridden" at their last set value; tell
+        # Live to follow the automation again so the recorded curve takes effect.
+        try:
+            self._song.re_enable_automation()
+        except Exception:
+            pass
+        written = rec["next"]
+        desc = rec["desc"]
+        self._autorec = None
+        return {"recording": False, "target": desc, "points_written": written}
+
+    def _automation_recording_status(self):
+        rec = self._autorec
+        if rec is None:
+            return {"recording": False}
+        return {"recording": True, "target": rec["desc"],
+                "current_song_time": self._song.current_song_time,
+                "points_written": rec["next"], "point_count": len(rec["points"]),
+                "stop_at": rec["end"]}
 
     # ── Browser implementations ───────────────────────────────────────────────
 

@@ -140,6 +140,7 @@ class AbletonConnection:
             "set_arrangement_loop", "set_time_signature", "set_track_fold",
             "select_track", "select_scene", "show_view",
             "subscribe", "unsubscribe",
+            "record_automation", "stop_automation_recording",
             # Arrangement view commands
             "switch_to_arrangement_view", "set_current_song_time",
             "duplicate_session_clip_to_arrangement",
@@ -2298,6 +2299,118 @@ def list_subscriptions(ctx: Context, user_prompt: str = "") -> str:
     except Exception as e:
         logger.error(f"Error listing subscriptions: {str(e)}")
         return f"Error listing subscriptions: {str(e)}"
+
+
+# ── Automation recording ────────────────────────────────────────────────────────
+
+@mcp.tool()
+@rich_telemetry_tool("record_automation")
+def record_automation(
+    ctx: Context,
+    points: List[Dict[str, float]],
+    kind: str = "tempo",
+    track_index: int = 0,
+    device_index: int = 0,
+    parameter_index: int = None,
+    parameter_name: str = None,
+    mixer_target: str = "volume",
+    send_index: int = 0,
+    track_type: str = "regular",
+    chain_index: int = None,
+    chain_device_index: int = None,
+    start_time: float = None,
+    stop_at: float = None,
+    auto_stop: bool = True,
+    user_prompt: str = ""
+) -> str:
+    """
+    Record real Arrangement automation by playing the song and moving a parameter
+    over time — the way a human automates by hand. This reaches automation the
+    direct clip-envelope tools CAN'T write: song tempo, master/mix-bus moves, and
+    continuous curves that span multiple clips or empty space.
+
+    It arms Arrangement record, seeks to the start, starts playback, and writes
+    each point's value when the playhead reaches that beat. This runs in real
+    time in Live and returns immediately with an `estimated_seconds`; wait about
+    that long (or poll automation_recording_status), then it auto-stops (or call
+    stop_automation_recording). NOTE: this moves the transport and records into
+    the Arrangement — don't run it on a set you care about without saving first.
+
+    What to automate (`kind`):
+    - 'tempo'  — the song tempo in BPM (values are BPM)
+    - 'device' — a device parameter: set track_index, device_index, and
+                 parameter_name or parameter_index (values in the param's range;
+                 for nested racks also chain_index / chain_device_index)
+    - 'mixer'  — a track's mixer: set track_index and mixer_target
+                 ('volume' 0-1, 'pan' -1..1, or 'send' with send_index)
+
+    Parameters:
+    - points: List of {"time": beats, "value": number}, e.g. a tempo ramp
+      [{"time":0,"value":120},{"time":16,"value":140}]
+    - kind: 'tempo' (default), 'device', or 'mixer'
+    - track_index / device_index / parameter_index / parameter_name: device target
+    - mixer_target / send_index: mixer target
+    - track_type: 'regular' (default), 'return', or 'master'
+    - chain_index / chain_device_index: for a device nested in a rack
+    - start_time: beat to start recording from (default: the first point / 0)
+    - stop_at: beat to stop at (default: last point + 1 beat)
+    - auto_stop: stop and disarm automatically at stop_at (default True)
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        ableton = get_ableton_connection()
+        target = {"kind": kind, "track_index": track_index, "device_index": device_index,
+                  "parameter_index": parameter_index, "parameter_name": parameter_name,
+                  "target": mixer_target, "send_index": send_index, "track_type": track_type,
+                  "chain_index": chain_index, "chain_device_index": chain_device_index}
+        result = ableton.send_command("record_automation", {
+            "target": target, "points": points,
+            "start_time": start_time, "stop_at": stop_at, "auto_stop": auto_stop,
+        })
+        return (f"Recording automation for {result.get('target')} — {result.get('point_count')} points "
+                f"from beat {result.get('start')} to {result.get('stop_at')}; "
+                f"~{result.get('estimated_seconds')}s. It auto-stops; then check the arrangement.")
+    except Exception as e:
+        logger.error(f"Error recording automation: {str(e)}")
+        return f"Error recording automation: {str(e)}"
+
+
+@mcp.tool()
+@telemetry_tool("stop_automation_recording")
+def stop_automation_recording(ctx: Context, user_prompt: str = "") -> str:
+    """
+    Stop an in-progress automation recording early (stops playback, disarms
+    Arrangement record). Normally record_automation auto-stops on its own.
+
+    Parameters:
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("stop_automation_recording", {})
+        return f"Stopped automation recording ({result.get('points_written', 0)} points written)"
+    except Exception as e:
+        logger.error(f"Error stopping automation recording: {str(e)}")
+        return f"Error stopping automation recording: {str(e)}"
+
+
+@mcp.tool()
+@telemetry_tool("automation_recording_status")
+def automation_recording_status(ctx: Context, user_prompt: str = "") -> str:
+    """
+    Check whether an automation recording is running, how many points have been
+    written so far, and the current playhead position.
+
+    Parameters:
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("automation_recording_status", {})
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        logger.error(f"Error getting automation recording status: {str(e)}")
+        return f"Error getting automation recording status: {str(e)}"
 
 
 # ── Batch ──────────────────────────────────────────────────────────────────────
