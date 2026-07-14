@@ -163,6 +163,12 @@ and workflow control (60 tools in total). Grouped by area:
 - `batch` — run many operations in a single round-trip (~13× faster than
   issuing them one at a time); the whole batch is a single undo step
 
+**Automation recording (reaches what clip envelopes can't)**
+- `record_automation` plays the song and moves a parameter over time to capture
+  real Arrangement automation — including **song tempo**, **master / mix-bus**
+  moves, and continuous curves that span multiple clips. This is the escape
+  hatch for the automation the direct clip-envelope tools can't write.
+
 **Reacting to the user (state observers)**
 - `subscribe` to Live changes and drain them with `poll_events` — so the
   assistant can respond to what you do in Live, while the connection stays
@@ -260,12 +266,14 @@ What it **can't** do directly, with the practical example of each:
 - **Smooth curves.** Even where automation *is* writable, "a gentle S-curve swell"
   comes out as a staircase, because the only write call places flat steps.
 
-**The practical escape hatch — record it.** Anything that plays back can be
-*recorded* as automation: arm arrangement record, start playback, and change the
-parameter (including tempo) over time — Live captures the moves as real
-automation. It's how a human would automate the master or tempo by hand, and it
-reaches everything the direct clip-envelope API can't. It's on the roadmap as a
-first-class tool; see *Roadmap — bypassing the harder limits*.
+**The practical escape hatch — record it (implemented).** Anything that plays
+back can be *recorded* as automation: arm arrangement record, start playback,
+and change the parameter (including tempo) over time — Live captures the moves as
+real automation. This is exactly how a human automates the master or tempo by
+hand, and it reaches everything the direct clip-envelope API can't. It ships as
+the **`record_automation`** tool (kinds: tempo / device / mixer), so master
+fades, tempo ramps, and cross-clip sweeps are all achievable today — you just
+get them by *recording* rather than by writing points directly.
 
 ### Limitations — genuinely blocked
 
@@ -290,34 +298,29 @@ Verified against the running LOM (Live 12.3):
 Investigating the LOM turned up working paths around several things previously
 listed as hard limits:
 
-- **Tempo automation — recordable, not directly writable.** You can't attach a
-  Song-Tempo envelope to a clip (the master track has no clips). **But** the
-  Song-Tempo `DeviceParameter` *is* automatable, and its `automation_state` goes
-  from 0 → 1 when you: enable arrangement record, start playback, and change
-  `song.tempo` over time. Verified in this repo — the engine records the sweep
-  as real arrangement automation. So tempo automation is achievable via
-  **automation recording**, just not as a clean "write these points" call.
-- **Arrangement clip move/resize — actually possible.** An arrangement clip's
-  `position`, `start_marker`, and `end_marker` are all writable (only the
-  derived `start_time`/`end_time` are read-only). So moving and resizing
-  arrangement clips is directly implementable; the earlier "append-only"
-  characterization was wrong.
-- **Any parameter can be automated by recording**, not just tempo — the same
-  arrangement-record trick captures moves of any automatable `DeviceParameter`,
-  which is how the model could produce smooth/curved automation the direct
-  `insert_step` API can't write.
+- **Tempo automation — solved via recording (shipped).** You can't attach a
+  Song-Tempo envelope to a clip (the master track has no clips), but the
+  Song-Tempo `DeviceParameter` *is* automatable, and `record_automation` captures
+  a tempo curve by playing and moving the tempo. Verified: playback follows a
+  recorded 120 → 140 → 160 BPM ramp.
+- **Master / mix-bus and cross-clip automation — solved via recording (shipped).**
+  Same `record_automation` tool records any automatable parameter (tempo, mixer
+  volume/pan/sends, device params) straight into the Arrangement, independent of
+  clips — so a master fade or a sweep spanning several clips is achievable.
+- **Arrangement clip move/resize — implemented.** An arrangement clip's
+  `start_time` is read-only (an earlier "append-only" claim was wrong in a
+  different way): a real move is done by duplicate-to-new-position + delete, and
+  `start_marker`/`end_marker`/loop are writable for the content window. Shipped
+  as the arrangement-editing tools.
 
 ### Roadmap (feasible next steps)
 
 Confirmed feasible against the LOM, in rough priority order:
 
-- **Automation recording API** — a tool that arms arrangement record, plays,
-  and streams parameter/tempo changes to capture automation the direct envelope
-  API can't write (the tempo-automation bypass, generalized). This is the escape
-  hatch for master/tempo/cross-clip automation described above.
 - Overdub and punch in/out
 - Groove pool, crossfader assignment, and finer send/return routing
 - Simpler/Sampler sample loading by path
+- Denser/curved automation recording (interpolate points for smoother curves)
 
 Recently shipped (v0.5.0): **arrangement clip editing** — move/duplicate/delete
 arrangement clips and set their content window/loop. (Note: an arrangement
