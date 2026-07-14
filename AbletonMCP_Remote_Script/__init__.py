@@ -756,6 +756,9 @@ class AbletonMCP(ControlSurface):
                 "arm": track.arm,
                 "volume": track.mixer_device.volume.value,
                 "panning": track.mixer_device.panning.value,
+                # Coarse output meter (0..1); the one bit of live signal level the
+                # LOM exposes. Updates in real time whenever audio flows.
+                "output_meter_level": getattr(track, "output_meter_level", None),
                 "clip_slots": clip_slots,
                 "devices": devices
             }

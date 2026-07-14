@@ -366,12 +366,18 @@ duplicate-to-new-position + delete-original, since `start_time` is read-only.)
 ### Bypassing the harder limits — the Max for Live bridge
 
 The ceiling above the LOM is a **Max for Live** device, which runs inside the
-audio/MIDI signal path and reaches what a Remote Script can't: real audio
-analysis, and MIDI/CC generation. A foundation for this ships in **`M4L/`** — an
-M4L device runs a Node-for-Max bridge on TCP 9878, and the server's `m4l_*` tools
-talk to it. See [`M4L/README.md`](M4L/README.md) for the architecture and
-install/test steps. (The bridge and protocol are tested standalone; the in-Live
-audio wiring needs manual verification.)
+audio/MIDI signal path and reaches what a Remote Script can't. It ships in
+**`M4L/`** — an M4L device runs a Node-for-Max bridge on TCP 9878, and the
+server's `m4l_*` tools talk to it. **Verified in Live:** real **audio analysis**
+(peak of a track's signal) and **audio synthesis** (a sine synth that generates
+a tone from nothing — the track meter goes 0 → ~0.87 on a note). See
+[`M4L/README.md`](M4L/README.md) for the architecture and install steps.
+
+Buildable next via M4L (the marker for each device type is known — `aaaa` audio
+effect / `iiii` instrument / `mmmm` MIDI effect):
+
+- **MIDI / CC generation into Live** — a MIDI-effect device wiring the bridge's
+  note/CC outlet to `noteout`/`ctlout`; the practical route to MIDI CC.
 
 Still out of reach even with M4L:
 

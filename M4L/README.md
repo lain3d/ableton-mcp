@@ -28,11 +28,19 @@ Node via `max-api` messages; MIDI/CC instructions flow Node → Max via outlets.
 ## Files
 
 - `mcp_bridge.js` — the Node-for-Max bridge (also runs standalone for testing).
-- `build_amxd.py` — generates the device `.amxd` from a Max patcher; the patcher
-  for the analysis device is generated in-code so it's reproducible.
-- `AbletonMCP_Analysis.amxd` — the built audio-analysis device (Audio Effect).
+- `build_amxd.py` — generates a device `.amxd` from a Max patcher; the patchers
+  are generated in-code so they're reproducible. The 4-byte form marker selects
+  the device type (`aaaa` audio effect / `iiii` instrument / `mmmm` MIDI effect).
+- `AbletonMCP_Analysis.amxd` — audio-analysis device (reports peak of the audio
+  passing through it).
+- `AbletonMCP_Synth.amxd` — a sine synth: **generates audio from nothing**. The
+  bridge's note outlet (from `m4l_send_midi`) drives a `cycle~` oscillator;
+  velocity sets the level, so a note plays a pitch and velocity 0 silences it.
 
-Rebuild the device with: `python build_amxd.py`
+Rebuild: `python build_amxd.py --device analysis` / `--device synth`
+
+**Run only one AbletonMCP M4L device at a time** — they all host the bridge on
+port 9878 and would collide.
 
 ## What's tested
 
@@ -45,11 +53,20 @@ Rebuild the device with: `python build_amxd.py`
   path — data the LOM cannot provide.
 - `m4l_status` / `m4l_get_analysis` from the MCP server return live values.
 
-**Verified standalone, wiring pending in this device:**
-- The bridge's `send_midi` / `send_cc` protocol works, but this *audio-analysis*
-  device doesn't wire the Node MIDI outlet to a `noteout`/`ctlout` — MIDI/CC
-  generation belongs in a dedicated **MIDI Effect** device (roadmap). Calling
-  them here reports success but emits nothing into Live.
+**Audio synthesis — verified in Live:**
+- The synth device generates a tone on demand: the track's `output_meter_level`
+  goes 0 → ~0.87 when a note is triggered via `m4l_send_midi`, back to 0 on
+  velocity 0. This is real audio created from nothing — impossible via the LOM.
+
+**Limitations gauged while building this:**
+- Synths must be hand-authored as Max DSP patches, and can only be verified
+  indirectly (the coarse `output_meter_level`, not the actual sound). This
+  minimal synth has no ADSR envelope — a musical instrument would build one in
+  the patch.
+- MIDI/CC *generation into Live* (`send_midi`/`send_cc`) needs a dedicated
+  **MIDI Effect** device (`mmmm` marker) wiring the Node outlet to
+  `noteout`/`ctlout`; in the analysis/synth devices those outlets drive analysis
+  or the oscillator, not Live's MIDI stream. (Next up.)
 
 ## Install (how it's loaded)
 
