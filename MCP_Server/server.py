@@ -15,26 +15,21 @@ from .telemetry_decorator import telemetry_tool, rich_telemetry_tool
 ABLETON_HOST = os.environ.get("ABLETON_HOST", "localhost")
 ABLETON_PORT = int(os.environ.get("ABLETON_PORT", "9877"))
 
-# The Max for Live bridge (Node for Max) listens on a separate port. Its
-# capabilities (audio analysis, MIDI/CC generation) are only available while an
-# AbletonMCP M4L device is loaded on a track; see M4L/README.md.
+# The Max for Live bridge (Node for Max) listens on its own TCP port. Several
+# devices can run at once, each on the first free port in a small range and
+# tagged with a role (analysis / synth / midi); the server scans the range to
+# discover them and routes commands by role. Only available while an AbletonMCP
+# M4L device is loaded on a track; see M4L/README.md.
 M4L_HOST = os.environ.get("ABLETON_M4L_HOST", "127.0.0.1")
-M4L_PORT = int(os.environ.get("ABLETON_M4L_PORT", "9878"))
+M4L_PORT_BASE = int(os.environ.get("ABLETON_M4L_PORT", "9878"))
+M4L_PORT_COUNT = 10
 
 
-def m4l_command(command_type: str, params: Dict[str, Any] = None, timeout: float = 5.0) -> Dict[str, Any]:
-    """One-shot request to the M4L Node bridge. Raises with a clear message when
-    the device isn't loaded (nothing is listening on the bridge port)."""
+def _m4l_send(port: int, command_type: str, params: Dict[str, Any] = None, timeout: float = 5.0) -> Dict[str, Any]:
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.settimeout(timeout)
     try:
-        try:
-            sock.connect((M4L_HOST, M4L_PORT))
-        except (ConnectionRefusedError, OSError):
-            raise Exception(
-                f"No AbletonMCP Max for Live device is running (nothing on "
-                f"{M4L_HOST}:{M4L_PORT}). Load the AbletonMCP analysis device on a track."
-            )
+        sock.connect((M4L_HOST, port))
         sock.sendall(json.dumps({"type": command_type, "params": params or {}}).encode("utf-8"))
         buf = b""
         while True:
@@ -54,6 +49,50 @@ def m4l_command(command_type: str, params: Dict[str, Any] = None, timeout: float
         return resp.get("result", {})
     finally:
         sock.close()
+
+
+def m4l_discover() -> List[Dict[str, Any]]:
+    """Scan the bridge port range and return the reachable devices' ping info
+    (role, port, capabilities)."""
+    found = []
+    for i in range(M4L_PORT_COUNT):
+        port = M4L_PORT_BASE + i
+        try:
+            info = _m4l_send(port, "ping", timeout=0.4)
+            info["port"] = info.get("port", port)
+            found.append(info)
+        except Exception:
+            continue
+    return found
+
+
+def m4l_command(command_type: str, params: Dict[str, Any] = None, role: str = None,
+                timeout: float = 5.0) -> Dict[str, Any]:
+    """Send a command to an M4L device, optionally selecting one by role. Raises
+    a clear message when no matching device is loaded."""
+    devices = m4l_discover()
+    if not devices:
+        raise Exception(
+            f"No AbletonMCP Max for Live device is running (nothing on "
+            f"{M4L_HOST}:{M4L_PORT_BASE}..{M4L_PORT_BASE + M4L_PORT_COUNT - 1}). "
+            f"Load an AbletonMCP M4L device on a track."
+        )
+    target = None
+    if role:
+        target = next((d for d in devices if d.get("role") == role), None)
+        # A cold-starting device can miss its self-label (the role message fires
+        # before Node for Max is fully up). 'analysis' labels itself reliably; for
+        # synth/midi, fall back to the sole non-analysis device.
+        if target is None and role in ("synth", "midi"):
+            non_analysis = [d for d in devices if d.get("role") != "analysis"]
+            if len(non_analysis) == 1:
+                target = non_analysis[0]
+        if target is None:
+            roles = [d.get("role") for d in devices]
+            raise Exception(f"No M4L device with role '{role}' loaded (found: {roles})")
+    else:
+        target = devices[0]
+    return _m4l_send(target["port"], command_type, params, timeout)
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, 
@@ -2804,8 +2843,11 @@ def m4l_status(ctx: Context, user_prompt: str = "") -> str:
     - user_prompt: The original user prompt that led to this tool call (for telemetry)
     """
     try:
-        result = m4l_command("ping")
-        return f"M4L bridge connected: {json.dumps(result)}"
+        devices = m4l_discover()
+        if not devices:
+            return "No AbletonMCP Max for Live device is loaded (bridge port range is silent)."
+        return "M4L devices loaded: " + json.dumps(
+            [{"role": d.get("role"), "port": d.get("port")} for d in devices])
     except Exception as e:
         return f"M4L bridge not available: {str(e)}"
 
@@ -2825,7 +2867,7 @@ def m4l_get_analysis(ctx: Context, user_prompt: str = "") -> str:
     - user_prompt: The original user prompt that led to this tool call (for telemetry)
     """
     try:
-        result = m4l_command("get_analysis")
+        result = m4l_command("get_analysis", role="analysis")
         return json.dumps(result, indent=2)
     except Exception as e:
         logger.error(f"Error getting M4L analysis: {str(e)}")
@@ -2834,18 +2876,22 @@ def m4l_get_analysis(ctx: Context, user_prompt: str = "") -> str:
 
 @mcp.tool()
 @telemetry_tool("m4l_send_midi")
-def m4l_send_midi(ctx: Context, pitch: int, velocity: int = 100, duration: float = 100.0, user_prompt: str = "") -> str:
+def m4l_send_midi(ctx: Context, pitch: int, velocity: int = 100, duration: float = 100.0, target: str = None, user_prompt: str = "") -> str:
     """
-    Emit a MIDI note from the loaded AbletonMCP M4L device into its track.
+    Emit a MIDI note from a loaded AbletonMCP M4L device. The 'midi' device
+    injects it into the track's MIDI stream (plays a downstream instrument); the
+    'synth' device plays it as its own tone.
 
     Parameters:
     - pitch: MIDI note number (0-127)
     - velocity: Note velocity (0-127, default 100)
     - duration: Note duration in milliseconds (default 100)
+    - target: Which device role to send to ('midi' or 'synth'); default = the
+      first M4L device found
     - user_prompt: The original user prompt that led to this tool call (for telemetry)
     """
     try:
-        result = m4l_command("send_midi", {"pitch": pitch, "velocity": velocity, "duration": duration})
+        result = m4l_command("send_midi", {"pitch": pitch, "velocity": velocity, "duration": duration}, role=target)
         return f"Sent MIDI note {result.get('pitch')} vel {result.get('velocity')}"
     except Exception as e:
         logger.error(f"Error sending M4L MIDI: {str(e)}")
@@ -2854,18 +2900,20 @@ def m4l_send_midi(ctx: Context, pitch: int, velocity: int = 100, duration: float
 
 @mcp.tool()
 @telemetry_tool("m4l_send_cc")
-def m4l_send_cc(ctx: Context, controller: int, value: int, user_prompt: str = "") -> str:
+def m4l_send_cc(ctx: Context, controller: int, value: int, target: str = None, user_prompt: str = "") -> str:
     """
-    Emit a MIDI CC message from the loaded AbletonMCP M4L device — the practical
+    Emit a MIDI CC message from a loaded AbletonMCP M4L device — the practical
     route to MIDI CC, which clip envelopes can't reach.
 
     Parameters:
     - controller: CC number (0-127)
     - value: CC value (0-127)
+    - target: Which device role to send to (usually 'midi'); default = the first
+      M4L device found
     - user_prompt: The original user prompt that led to this tool call (for telemetry)
     """
     try:
-        result = m4l_command("send_cc", {"controller": controller, "value": value})
+        result = m4l_command("send_cc", {"controller": controller, "value": value}, role=target)
         return f"Sent CC {result.get('controller')} = {result.get('value')}"
     except Exception as e:
         logger.error(f"Error sending M4L CC: {str(e)}")

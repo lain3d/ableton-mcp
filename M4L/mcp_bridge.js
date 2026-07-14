@@ -31,7 +31,17 @@ function log(msg) {
   try { fs.appendFileSync(LOG_PATH, line); } catch (e) {}
 }
 log('mcp_bridge.js starting (pid ' + process.pid + ', node ' + process.version + ')');
+log('argv: ' + JSON.stringify(process.argv));
 process.on('uncaughtException', (e) => log('uncaughtException: ' + (e && e.stack || e)));
+
+// Each device passes its role (analysis / synth / midi) as the first script
+// argument, so the MCP server can discover which device is on which port and
+// route commands accordingly. A 'role' message can also set it (see below).
+let role = 'unknown';
+for (let i = 2; i < process.argv.length; i++) {
+  const a = process.argv[i];
+  if (a && a[0] !== '@' && a !== 'start') { role = a; break; }
+}
 
 // max-api is only present inside Node for Max; mock it when running standalone.
 let Max;
@@ -48,7 +58,15 @@ try {
   };
 }
 
-const PORT = parseInt(process.env.MCP_M4L_PORT || '9878', 10);
+// Bind the first free port in a small range so several M4L devices can run at
+// once; the server scans the range and pings each to discover them.
+const PORT_BASE = parseInt(process.env.MCP_M4L_PORT || '9878', 10);
+const PORT_COUNT = 10;
+let PORT = PORT_BASE;
+
+// A 'role' message from the patch can set/override the role (belt-and-suspenders
+// in case node.script doesn't forward argv on some Max builds).
+// (Handler registered after Max is defined, below.)
 
 // Latest analysis values pushed in from the Max patch.
 const analysis = {
@@ -66,6 +84,7 @@ for (const key of ['peak', 'rms', 'pitch', 'centroid']) {
     analysis.updated_at = Date.now();
   });
 }
+Max.addHandler('role', (r) => { role = String(r); log('role set to ' + role); });
 
 function handle(cmd) {
   const type = cmd.type || '';
@@ -75,6 +94,7 @@ function handle(cmd) {
       return {
         pong: true,
         port: PORT,
+        role: role,
         capabilities: ['get_analysis', 'send_midi', 'send_cc'],
         analysis_fresh_ms: analysis.updated_at ? Date.now() - analysis.updated_at : null,
       };
@@ -137,14 +157,33 @@ const server = net.createServer((socket) => {
   socket.on('error', () => {});
 });
 
+// Try each port in the range until one binds free, so multiple M4L devices can
+// coexist (each on its own port); the server discovers them by scanning.
+function listenInRange(offset) {
+  if (offset >= PORT_COUNT) {
+    log('no free port in range ' + PORT_BASE + '..' + (PORT_BASE + PORT_COUNT - 1));
+    Max.post('AbletonMCP bridge: no free port in range');
+    return;
+  }
+  PORT = PORT_BASE + offset;
+  server.listen(PORT, '127.0.0.1');
+}
+
 server.on('error', (err) => {
+  if (err && err.code === 'EADDRINUSE') {
+    log('port ' + PORT + ' in use, trying next');
+    listenInRange((PORT - PORT_BASE) + 1);
+    return;
+  }
   Max.post('AbletonMCP bridge server error: ' + err.message);
   log('server error: ' + err.message);
 });
 
-server.listen(PORT, '127.0.0.1', () => {
-  Max.post('AbletonMCP Max bridge listening on 127.0.0.1:' + PORT);
-  log('listening on 127.0.0.1:' + PORT);
+server.on('listening', () => {
+  Max.post('AbletonMCP Max bridge (' + role + ') on 127.0.0.1:' + PORT);
+  log('listening on 127.0.0.1:' + PORT + ' role=' + role);
 });
+
+listenInRange(0);
 
 module.exports = { handle, analysis, PORT };

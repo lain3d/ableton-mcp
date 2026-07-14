@@ -43,8 +43,14 @@ Node via `max-api` messages; MIDI/CC instructions flow Node → Max via outlets.
 
 Rebuild: `python build_amxd.py --device analysis | synth | midi`
 
-**Run only one AbletonMCP M4L device at a time** — they all host the bridge on
-port 9878 and would collide.
+**Multiple devices coexist** — each bridge binds the first free port in
+9878–9887 and tags itself with a role (`analysis` / `synth` / `midi`); the
+server scans the range and routes `m4l_*` tools by role. So you can run the
+synth and analysis together, e.g. to measure the synth's output pitch. (The
+`analysis` device self-labels reliably; a cold-starting synth/midi may show role
+`unknown` because Node-for-Max's message pipe isn't ready when the role message
+fires — the server falls back to "the non-analysis device," so routing still
+works.)
 
 ## What's tested
 
@@ -57,10 +63,11 @@ port 9878 and would collide.
   path — data the LOM cannot provide.
 - `m4l_status` / `m4l_get_analysis` from the MCP server return live values.
 
-**Audio synthesis — verified in Live:**
-- The synth device generates a tone on demand: the track's `output_meter_level`
-  goes 0 → ~0.87 when a note is triggered via `m4l_send_midi`, back to 0 on
-  velocity 0. This is real audio created from nothing — impossible via the LOM.
+**Audio synthesis + measurement — verified in Live:**
+- The synth device generates a tone on demand (`output_meter_level` 0 → ~0.87).
+- With the analysis device after it, `m4l_get_analysis` reports the **pitch**
+  (via `fzero~`): playing A4 on the synth measures **440.1 Hz**. So audio the
+  tool creates can be verified *objectively* (pitch/level), not just "it exists."
 
 **MIDI generation — verified in Live:**
 - With the MIDI-effect device before a stock instrument, `m4l_send_midi` plays a

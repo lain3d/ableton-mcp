@@ -71,22 +71,28 @@ def analysis_maxpat(script_name="mcp_bridge.js"):
     boxes = [
         _box("obj-1", "newobj", "plugin~", 40, 60, 130, 22, numin=2, numout=3,
              outtype=["signal", "signal", "list"]),
-        _box("obj-2", "newobj", "plugout~", 40, 320, 130, 22, numin=2, numout=0),
+        _box("obj-2", "newobj", "plugout~", 40, 380, 130, 22, numin=2, numout=0),
         # peak analysis on the left channel, reported every 50 ms
         _box("obj-3", "newobj", "peakamp~ 50", 220, 120, 110, 22, numin=1, numout=1,
              outtype=["float"]),
         _box("obj-4", "newobj", "prepend peak", 220, 160, 90, 22, numin=1, numout=1,
              outtype=[""]),
-        # the Node for Max bridge; @autostart runs it on load, @watch reloads
-        # the script when the file changes during development
+        # the Node bridge, told its role so the server can route to it
         _box("obj-5", "newobj",
-             "node.script " + script_name + " @autostart 1 @watch 1",
-             220, 210, 300, 22, numin=1, numout=2, outtype=["", "bang"]),
-        # belt-and-suspenders: also send "script start" on device load
-        _box("obj-7", "newobj", "loadbang", 480, 120, 60, 22, numin=1, numout=1),
-        _box("obj-8", "message", "script start", 480, 160, 80, 22, numin=2, numout=1),
-        _box("obj-6", "comment", "AbletonMCP audio-analysis bridge (TCP 9878)",
-             220, 250, 300, 20),
+             "node.script " + script_name + " analysis @autostart 1",
+             220, 210, 320, 22, numin=1, numout=2, outtype=["", "bang"]),
+        _box("obj-7", "newobj", "loadbang", 480, 40, 60, 22, numin=1, numout=1),
+        # tell the bridge its role once the script is up (delayed so the handler
+        # is registered; Node for Max doesn't forward node.script argv)
+        _box("obj-13", "newobj", "delay 4000", 480, 80, 80, 22, numin=2, numout=1),
+        _box("obj-9", "message", "role analysis", 480, 120, 90, 22, numin=2, numout=1),
+        # fundamental-pitch estimate (Hz) on the left channel
+        _box("obj-10", "newobj", "fzero~", 40, 120, 60, 22, numin=1, numout=2,
+             outtype=["float", "float"]),
+        _box("obj-11", "newobj", "prepend pitch", 40, 160, 90, 22, numin=1, numout=1,
+             outtype=[""]),
+        _box("obj-6", "comment", "AbletonMCP analysis: peak + pitch (bridge 9878+)",
+             220, 250, 320, 20),
     ]
     lines = [
         _line("obj-1", 0, "obj-2", 0),   # audio passthrough L
@@ -94,8 +100,12 @@ def analysis_maxpat(script_name="mcp_bridge.js"):
         _line("obj-1", 0, "obj-3", 0),   # L channel -> peakamp~
         _line("obj-3", 0, "obj-4", 0),   # peak float -> prepend peak
         _line("obj-4", 0, "obj-5", 0),   # "peak <v>" -> node.script
-        _line("obj-7", 0, "obj-8", 0),   # loadbang -> "script start" message
-        _line("obj-8", 0, "obj-5", 0),   # "script start" -> node.script
+        _line("obj-1", 0, "obj-10", 0),  # L channel -> fzero~
+        _line("obj-10", 0, "obj-11", 0), # pitch Hz -> prepend pitch
+        _line("obj-11", 0, "obj-5", 0),  # "pitch <hz>" -> node.script
+        _line("obj-7", 0, "obj-13", 0),  # loadbang -> delay
+        _line("obj-13", 0, "obj-9", 0),  # delay -> "role analysis"
+        _line("obj-9", 0, "obj-5", 0),   # -> node.script
     ]
     return {
         "patcher": {
@@ -121,10 +131,11 @@ def synth_maxpat(script_name="mcp_bridge.js"):
     try to bind the bridge port)."""
     boxes = [
         _box("obj-1", "newobj",
-             "node.script " + script_name + " @autostart 1 @watch 1",
-             40, 60, 300, 22, numin=1, numout=2, outtype=["", "bang"]),
+             "node.script " + script_name + " synth @autostart 1",
+             40, 60, 320, 22, numin=1, numout=2, outtype=["", "bang"]),
         _box("obj-2", "newobj", "loadbang", 380, 20, 60, 22, numin=1, numout=1),
-        _box("obj-3", "message", "script start", 380, 60, 80, 22, numin=2, numout=1),
+        _box("obj-3", "newobj", "delay 4000", 380, 60, 80, 22, numin=2, numout=1),
+        _box("obj-12", "message", "role synth", 380, 100, 80, 22, numin=2, numout=1),
         _box("obj-4", "newobj", "route note", 40, 110, 90, 22, numin=1, numout=2,
              outtype=["", ""]),
         _box("obj-5", "newobj", "unpack 0 0 0", 40, 150, 110, 22, numin=1, numout=3,
@@ -138,8 +149,9 @@ def synth_maxpat(script_name="mcp_bridge.js"):
              40, 370, 320, 20),
     ]
     lines = [
-        _line("obj-2", 0, "obj-3", 0),   # loadbang -> "script start"
-        _line("obj-3", 0, "obj-1", 0),   # -> node.script
+        _line("obj-2", 0, "obj-3", 0),   # loadbang -> delay
+        _line("obj-3", 0, "obj-12", 0),  # delay -> "role synth"
+        _line("obj-12", 0, "obj-1", 0),  # -> node.script
         _line("obj-1", 0, "obj-4", 0),   # bridge messages -> route note
         _line("obj-4", 0, "obj-5", 0),   # note args -> unpack pitch vel dur
         _line("obj-5", 0, "obj-6", 0),   # pitch -> mtof
@@ -173,10 +185,11 @@ def midi_maxpat(script_name="mcp_bridge.js"):
     so run only one AbletonMCP M4L device at a time."""
     boxes = [
         _box("obj-1", "newobj",
-             "node.script " + script_name + " @autostart 1 @watch 1",
-             40, 60, 300, 22, numin=1, numout=2, outtype=["", "bang"]),
+             "node.script " + script_name + " midi @autostart 1",
+             40, 60, 320, 22, numin=1, numout=2, outtype=["", "bang"]),
         _box("obj-2", "newobj", "loadbang", 380, 20, 60, 22, numin=1, numout=1),
-        _box("obj-3", "message", "script start", 380, 60, 80, 22, numin=2, numout=1),
+        _box("obj-3", "newobj", "delay 4000", 380, 60, 80, 22, numin=2, numout=1),
+        _box("obj-7", "message", "role midi", 380, 100, 80, 22, numin=2, numout=1),
         _box("obj-4", "newobj", "route midi", 40, 110, 90, 22, numin=1, numout=2,
              outtype=["", ""]),
         # midiout sends a received list of bytes as raw MIDI into Live's stream
@@ -185,8 +198,9 @@ def midi_maxpat(script_name="mcp_bridge.js"):
              40, 200, 320, 20),
     ]
     lines = [
-        _line("obj-2", 0, "obj-3", 0),   # loadbang -> "script start"
-        _line("obj-3", 0, "obj-1", 0),   # -> node.script
+        _line("obj-2", 0, "obj-3", 0),   # loadbang -> delay
+        _line("obj-3", 0, "obj-7", 0),   # delay -> "role midi"
+        _line("obj-7", 0, "obj-1", 0),   # -> node.script
         _line("obj-1", 0, "obj-4", 0),   # bridge messages -> route midi
         _line("obj-4", 0, "obj-5", 0),   # raw bytes -> midiout
     ]
