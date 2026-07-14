@@ -142,7 +142,9 @@ class AbletonConnection:
             "subscribe", "unsubscribe",
             # Arrangement view commands
             "switch_to_arrangement_view", "set_current_song_time",
-            "duplicate_session_clip_to_arrangement"
+            "duplicate_session_clip_to_arrangement",
+            "move_arrangement_clip", "set_arrangement_clip_markers",
+            "delete_arrangement_clip", "duplicate_arrangement_clip"
         ]
 
         # Commands whose work on Live's main thread can take noticeably longer
@@ -825,7 +827,8 @@ def get_arrangement_clips(ctx: Context, track_index: int, user_prompt: str = "")
     """
     List all clips placed in the Arrangement timeline for a track.
 
-    Returns each clip's name, start_time, end_time, length, and type.
+    Returns each clip's index (use it with the move/resize/delete tools),
+    name, start_time, end_time, length, and its editable position/markers/loop.
 
     Parameters:
     - track_index: The index of the track to inspect
@@ -887,6 +890,123 @@ def duplicate_to_arrangement(
     except Exception as e:
         logger.error(f"Error duplicating clip to arrangement: {str(e)}")
         return f"Error duplicating clip to arrangement: {str(e)}"
+
+
+@mcp.tool()
+@telemetry_tool("move_arrangement_clip")
+def move_arrangement_clip(ctx: Context, track_index: int, clip_index: int, position: float, user_prompt: str = "") -> str:
+    """
+    Move a clip already in the Arrangement to a new beat position.
+
+    clip_index is the clip's index within the track's arrangement clips
+    (from get_arrangement_clips), NOT a Session clip slot.
+
+    Parameters:
+    - track_index: Index of the track holding the arrangement clip
+    - clip_index: Index of the clip in the track's arrangement clips
+    - position: New start position in beats from the arrangement start
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("move_arrangement_clip", {"track_index": track_index, "clip_index": clip_index, "position": position})
+        return f"Moved '{result.get('name', clip_index)}' to beat {result.get('start_time', position)} (ends {result.get('end_time')})"
+    except Exception as e:
+        logger.error(f"Error moving arrangement clip: {str(e)}")
+        return f"Error moving arrangement clip: {str(e)}"
+
+
+@mcp.tool()
+@telemetry_tool("set_arrangement_clip_markers")
+def set_arrangement_clip_markers(
+    ctx: Context,
+    track_index: int,
+    clip_index: int,
+    start_marker: float = None,
+    end_marker: float = None,
+    loop_start: float = None,
+    loop_end: float = None,
+    looping: bool = None,
+    user_prompt: str = ""
+) -> str:
+    """
+    Set an arrangement clip's content window and loop brace.
+
+    start_marker / end_marker choose which part of the clip's content plays;
+    loop_start / loop_end set the loop brace. These change what is heard within
+    the clip, not the region the clip occupies on the timeline (an arrangement
+    clip's footprint is fixed when it's placed — to change its length, delete
+    and re-place it, e.g. after setting the source clip's length). Use
+    move_arrangement_clip to reposition it.
+
+    Parameters:
+    - track_index: Index of the track holding the arrangement clip
+    - clip_index: Index of the clip in the track's arrangement clips
+    - start_marker: New content start marker in beats (optional)
+    - end_marker: New content end marker in beats (optional)
+    - loop_start: Loop brace start in beats (optional)
+    - loop_end: Loop brace end in beats (optional)
+    - looping: Enable/disable looping (optional)
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("set_arrangement_clip_markers", {
+            "track_index": track_index, "clip_index": clip_index,
+            "start_marker": start_marker, "end_marker": end_marker,
+            "loop_start": loop_start, "loop_end": loop_end, "looping": looping,
+        })
+        return (f"Set markers on '{result.get('name', clip_index)}': "
+                f"content {result.get('start_marker')}-{result.get('end_marker')}, "
+                f"spans beats {result.get('start_time')}-{result.get('end_time')}")
+    except Exception as e:
+        logger.error(f"Error setting arrangement clip markers: {str(e)}")
+        return f"Error setting arrangement clip markers: {str(e)}"
+
+
+@mcp.tool()
+@telemetry_tool("delete_arrangement_clip")
+def delete_arrangement_clip(ctx: Context, track_index: int, clip_index: int, user_prompt: str = "") -> str:
+    """
+    Delete a clip from the Arrangement timeline.
+
+    clip_index is the clip's index within the track's arrangement clips
+    (from get_arrangement_clips).
+
+    Parameters:
+    - track_index: Index of the track holding the arrangement clip
+    - clip_index: Index of the clip in the track's arrangement clips
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("delete_arrangement_clip", {"track_index": track_index, "clip_index": clip_index})
+        return f"Deleted arrangement clip '{result.get('deleted_name', clip_index)}' ({result.get('remaining', '?')} remain)"
+    except Exception as e:
+        logger.error(f"Error deleting arrangement clip: {str(e)}")
+        return f"Error deleting arrangement clip: {str(e)}"
+
+
+@mcp.tool()
+@telemetry_tool("duplicate_arrangement_clip")
+def duplicate_arrangement_clip(ctx: Context, track_index: int, clip_index: int, destination_time: float, user_prompt: str = "") -> str:
+    """
+    Copy a clip that's already in the Arrangement to another arrangement position
+    (e.g. repeat a section down the timeline).
+
+    Parameters:
+    - track_index: Index of the track holding the arrangement clip
+    - clip_index: Index of the clip in the track's arrangement clips
+    - destination_time: Beat position to place the copy
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("duplicate_arrangement_clip", {"track_index": track_index, "clip_index": clip_index, "destination_time": destination_time})
+        return f"Duplicated '{result.get('clip_name', clip_index)}' to beat {destination_time} ({result.get('clip_count', '?')} clips on track)"
+    except Exception as e:
+        logger.error(f"Error duplicating arrangement clip: {str(e)}")
+        return f"Error duplicating arrangement clip: {str(e)}"
 
 
 # ── Audio tracks, mixer & device parameters ───────────────────────────────────

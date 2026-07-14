@@ -154,6 +154,8 @@ and workflow control (60 tools in total). Grouped by area:
 **Scenes, transport & workflow**
 - Create, duplicate, delete, rename, and fire scenes
 - Playback/transport control; move the arrangement playhead; build arrangements
+- Arrangement clip editing: move, duplicate, and delete clips on the timeline,
+  and set their content window / loop
 - Undo / redo / capture MIDI; change tempo and time signature
 - Metronome, arrangement/session record, arrangement loop region
 - Colors (track / clip / scene); fold group tracks; select tracks/scenes and
@@ -230,6 +232,41 @@ Two recurring shapes explain most limits:
    linear/curved breakpoints with tension, which the LOM's write API doesn't
    offer.
 
+#### What "automation is only per-clip, per-track-parameter" blocks in practice
+
+Concretely, the model **can** do this today: automate a synth's filter cutoff,
+a reverb's dry/wet, or a track's own volume/pan/sends — *as long as the
+automation lives inside one clip on that same track* (see `set_clip_envelope` /
+`set_clip_mixer_envelope`). That covers a lot of sound-design and per-clip
+movement.
+
+What it **can't** do directly, with the practical example of each:
+
+- **A master/mix-bus fade or filter sweep.** "Fade the whole mix out over the
+  last 8 bars" or "sweep a filter on the master for the drop" — the master track
+  has no clips, so there's no clip envelope to write. (Workaround: automate every
+  track individually, or record it live — see below.)
+- **Tempo moves.** "Ritardando into the outro", "gradually push the tempo up
+  through the build" — tempo is a master/song-level parameter, same no-clip
+  problem. (Recordable, not directly writable — see below.)
+- **Automation that spans across clips or empty space.** In Live you can draw one
+  continuous filter sweep along a track's *arrangement lane* that runs straight
+  through several clips and the gaps between them. Here, automation is tied to a
+  single clip and **resets at each clip boundary**, so "one smooth 32-bar sweep
+  across the whole chorus" has to be chopped into per-clip pieces that line up —
+  and can't cover a section where the track has no clip at all.
+- **Groove amount / crossfader / other song-level moves** (e.g. DJ-style
+  crossfades between decks) — song-level, so blocked the same way.
+- **Smooth curves.** Even where automation *is* writable, "a gentle S-curve swell"
+  comes out as a staircase, because the only write call places flat steps.
+
+**The practical escape hatch — record it.** Anything that plays back can be
+*recorded* as automation: arm arrangement record, start playback, and change the
+parameter (including tempo) over time — Live captures the moves as real
+automation. It's how a human would automate the master or tempo by hand, and it
+reaches everything the direct clip-envelope API can't. It's on the roadmap as a
+first-class tool; see *Roadmap — bypassing the harder limits*.
+
 ### Limitations — genuinely blocked
 
 Verified against the running LOM (Live 12.3):
@@ -274,14 +311,18 @@ listed as hard limits:
 
 Confirmed feasible against the LOM, in rough priority order:
 
-- **Arrangement clip editing** — move/resize/delete arrangement clips via
-  `position` / `start_marker` / `end_marker` (proven writable)
 - **Automation recording API** — a tool that arms arrangement record, plays,
   and streams parameter/tempo changes to capture automation the direct envelope
-  API can't write (the tempo-automation bypass, generalized)
+  API can't write (the tempo-automation bypass, generalized). This is the escape
+  hatch for master/tempo/cross-clip automation described above.
 - Overdub and punch in/out
 - Groove pool, crossfader assignment, and finer send/return routing
 - Simpler/Sampler sample loading by path
+
+Recently shipped (v0.5.0): **arrangement clip editing** — move/duplicate/delete
+arrangement clips and set their content window/loop. (Note: an arrangement
+clip's timeline *footprint* is fixed once placed — moving is done by
+duplicate-to-new-position + delete-original, since `start_time` is read-only.)
 
 ### Roadmap — bypassing the harder limits
 

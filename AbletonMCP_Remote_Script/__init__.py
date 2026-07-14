@@ -248,6 +248,8 @@ class AbletonMCP(ControlSurface):
         "subscribe", "unsubscribe",
         "switch_to_arrangement_view", "set_current_song_time",
         "duplicate_session_clip_to_arrangement",
+        "move_arrangement_clip", "set_arrangement_clip_markers",
+        "delete_arrangement_clip", "duplicate_arrangement_clip",
     ])
 
     # Per-command socket/queue budget (seconds) for operations slower than the default.
@@ -475,6 +477,25 @@ class AbletonMCP(ControlSurface):
             return self._duplicate_session_clip_to_arrangement(params.get("track_index", 0),
                                                                params.get("clip_index", 0),
                                                                params.get("destination_time", 0.0))
+        elif command_type == "move_arrangement_clip":
+            return self._move_arrangement_clip(params.get("track_index", 0),
+                                               params.get("clip_index", 0),
+                                               params.get("position", 0.0))
+        elif command_type == "set_arrangement_clip_markers":
+            return self._set_arrangement_clip_markers(params.get("track_index", 0),
+                                                      params.get("clip_index", 0),
+                                                      params.get("start_marker", None),
+                                                      params.get("end_marker", None),
+                                                      params.get("loop_start", None),
+                                                      params.get("loop_end", None),
+                                                      params.get("looping", None))
+        elif command_type == "delete_arrangement_clip":
+            return self._delete_arrangement_clip(params.get("track_index", 0),
+                                                 params.get("clip_index", 0))
+        elif command_type == "duplicate_arrangement_clip":
+            return self._duplicate_arrangement_clip(params.get("track_index", 0),
+                                                    params.get("clip_index", 0),
+                                                    params.get("destination_time", 0.0))
         else:
             raise ValueError("Unknown command: " + str(command_type))
 
@@ -1013,12 +1034,21 @@ class AbletonMCP(ControlSurface):
             clips = []
 
             # track.arrangement_clips is available in Live 11 / 12
-            for clip in track.arrangement_clips:
+            for i, clip in enumerate(track.arrangement_clips):
                 clips.append({
+                    "index": i,
                     "name": clip.name,
                     "start_time": clip.start_time,
                     "end_time": clip.end_time,
                     "length": clip.length,
+                    # Editable: position moves the clip; start/end_marker set the
+                    # content window; loop_start/end set the loop brace.
+                    "position": clip.position,
+                    "start_marker": clip.start_marker,
+                    "end_marker": clip.end_marker,
+                    "looping": clip.looping,
+                    "loop_start": clip.loop_start,
+                    "loop_end": clip.loop_end,
                     "color": clip.color,
                     "is_midi_clip": clip.is_midi_clip,
                     "is_audio_clip": clip.is_audio_clip,
@@ -1075,6 +1105,134 @@ class AbletonMCP(ControlSurface):
             }
         except Exception as e:
             self.log_message("Error duplicating clip to arrangement: " + str(e))
+            raise
+
+    def _get_arrangement_clip(self, track_index, clip_index):
+        """Resolve an arrangement clip by its index in track.arrangement_clips."""
+        if track_index < 0 or track_index >= len(self._song.tracks):
+            raise IndexError("Track index out of range")
+        track = self._song.tracks[track_index]
+        arr = track.arrangement_clips
+        if clip_index < 0 or clip_index >= len(arr):
+            raise IndexError("Arrangement clip index out of range")
+        return track, arr[clip_index]
+
+    def _arr_clip_summary(self, clip):
+        return {"name": clip.name, "start_time": clip.start_time,
+                "end_time": clip.end_time, "length": clip.length,
+                "position": clip.position, "start_marker": clip.start_marker,
+                "end_marker": clip.end_marker}
+
+    def _move_arrangement_clip(self, track_index, clip_index, position):
+        """Move an arrangement clip to a new timeline position.
+
+        An arrangement clip's start_time is read-only and Clip.position only
+        shifts the content window, so a real move = duplicate the clip to the
+        new position, then delete the original (whose object reference stays
+        valid across the duplicate)."""
+        try:
+            track, clip = self._get_arrangement_clip(track_index, clip_index)
+            old_start = clip.start_time
+            position = float(position)
+            if abs(position - old_start) < 1e-9:
+                return self._arr_clip_summary(clip)
+            track.duplicate_clip_to_arrangement(clip, position)
+            # Delete the original by its retained reference (not by index, which
+            # the duplicate may have shifted).
+            try:
+                track.delete_clip(clip)
+            except Exception:
+                track.remove_clip_range(old_start, clip.end_time)
+            # Report the moved clip (the one now at `position`).
+            moved = None
+            for c in track.arrangement_clips:
+                if abs(c.start_time - position) < 1e-6:
+                    moved = c
+                    break
+            return self._arr_clip_summary(moved) if moved else {
+                "moved_to": position, "from": old_start}
+        except Exception as e:
+            self.log_message("Error moving arrangement clip: " + str(e))
+            raise
+
+    def _set_arrangement_clip_markers(self, track_index, clip_index,
+                                      start_marker=None, end_marker=None,
+                                      loop_start=None, loop_end=None, looping=None):
+        """Set an arrangement clip's content window and loop brace.
+
+        start_marker/end_marker choose which content plays; loop_start/loop_end
+        define the loop brace. This changes what is heard, not the region the
+        clip occupies on the timeline. Writes are ordered so an expanding move
+        doesn't transiently cross an existing boundary.
+        """
+        try:
+            track, clip = self._get_arrangement_clip(track_index, clip_index)
+            if looping is not None:
+                clip.looping = bool(looping)
+            # Move end out first when growing, start out first when shrinking.
+            if end_marker is not None and float(end_marker) >= clip.end_marker:
+                clip.end_marker = float(end_marker)
+                if start_marker is not None:
+                    clip.start_marker = float(start_marker)
+            else:
+                if start_marker is not None:
+                    clip.start_marker = float(start_marker)
+                if end_marker is not None:
+                    clip.end_marker = float(end_marker)
+            if loop_end is not None and float(loop_end) >= clip.loop_end:
+                clip.loop_end = float(loop_end)
+                if loop_start is not None:
+                    clip.loop_start = float(loop_start)
+            else:
+                if loop_start is not None:
+                    clip.loop_start = float(loop_start)
+                if loop_end is not None:
+                    clip.loop_end = float(loop_end)
+            info = self._arr_clip_summary(clip)
+            info.update({"looping": clip.looping, "loop_start": clip.loop_start,
+                         "loop_end": clip.loop_end})
+            return info
+        except Exception as e:
+            self.log_message("Error setting arrangement clip markers: " + str(e))
+            raise
+
+    def _delete_arrangement_clip(self, track_index, clip_index):
+        """Remove an arrangement clip from the timeline."""
+        try:
+            track, clip = self._get_arrangement_clip(track_index, clip_index)
+            name = clip.name
+            start = clip.start_time
+            end = clip.end_time
+            # Prefer Track.delete_clip(clip); fall back to removing the time span.
+            method = None
+            try:
+                if hasattr(track, "delete_clip"):
+                    track.delete_clip(clip)
+                    method = "delete_clip"
+                else:
+                    raise AttributeError("no delete_clip")
+            except Exception:
+                if hasattr(track, "remove_clip_range"):
+                    track.remove_clip_range(start, end)
+                    method = "remove_clip_range"
+                else:
+                    raise
+            return {"deleted_name": name, "track_index": track_index,
+                    "method": method, "remaining": len(track.arrangement_clips)}
+        except Exception as e:
+            self.log_message("Error deleting arrangement clip: " + str(e))
+            raise
+
+    def _duplicate_arrangement_clip(self, track_index, clip_index, destination_time):
+        """Copy an existing arrangement clip to another arrangement position."""
+        try:
+            track, clip = self._get_arrangement_clip(track_index, clip_index)
+            track.duplicate_clip_to_arrangement(clip, float(destination_time))
+            return {"track_index": track_index, "clip_name": clip.name,
+                    "destination_time": destination_time,
+                    "clip_count": len(track.arrangement_clips)}
+        except Exception as e:
+            self.log_message("Error duplicating arrangement clip: " + str(e))
             raise
 
     # ── Mixer / track management / device parameters ──────────────────────────
