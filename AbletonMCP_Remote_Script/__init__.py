@@ -256,6 +256,9 @@ class AbletonMCP(ControlSurface):
         "select_track", "select_scene", "show_view",
         "subscribe", "unsubscribe",
         "record_automation", "stop_automation_recording",
+        "create_cue_point", "delete_cue_point", "jump_to_cue", "rename_cue_point",
+        "crop_clip", "remove_warp_marker", "move_warp_marker",
+        "create_take_lane",
         "switch_to_arrangement_view", "set_current_song_time",
         "duplicate_session_clip_to_arrangement",
         "move_arrangement_clip", "set_arrangement_clip_markers",
@@ -488,6 +491,36 @@ class AbletonMCP(ControlSurface):
             return self._stop_automation_recording()
         elif command_type == "automation_recording_status":
             return self._automation_recording_status()
+        # Locators / cue points
+        elif command_type == "get_cue_points":
+            return self._get_cue_points()
+        elif command_type == "create_cue_point":
+            return self._create_cue_point(params.get("time", 0.0), params.get("name", None))
+        elif command_type == "delete_cue_point":
+            return self._delete_cue_point(params.get("time", None), params.get("index", None))
+        elif command_type == "jump_to_cue":
+            return self._jump_to_cue(params.get("index", None), params.get("name", None))
+        elif command_type == "rename_cue_point":
+            return self._rename_cue_point(params.get("index", 0), params.get("name", ""))
+        # Clip crop & warp markers
+        elif command_type == "crop_clip":
+            return self._crop_clip(params.get("track_index", 0), params.get("clip_index", 0))
+        elif command_type == "get_warp_markers":
+            return self._get_warp_markers(params.get("track_index", 0), params.get("clip_index", 0))
+        elif command_type == "remove_warp_marker":
+            return self._remove_warp_marker(params.get("track_index", 0), params.get("clip_index", 0),
+                                            params.get("beat_time", 0.0))
+        elif command_type == "move_warp_marker":
+            return self._move_warp_marker(params.get("track_index", 0), params.get("clip_index", 0),
+                                          params.get("beat_time", 0.0), params.get("new_beat_time", 0.0))
+        # Take lanes (comping)
+        elif command_type == "get_take_lanes":
+            return self._get_take_lanes(params.get("track_index", 0))
+        elif command_type == "create_take_lane":
+            return self._create_take_lane(params.get("track_index", 0))
+        # Clip automation introspection
+        elif command_type == "get_clip_envelopes":
+            return self._get_clip_envelopes(params.get("track_index", 0), params.get("clip_index", 0))
         # Arrangement view
         elif command_type == "switch_to_arrangement_view":
             return self._switch_to_arrangement_view()
@@ -2458,6 +2491,184 @@ class AbletonMCP(ControlSurface):
                 "current_song_time": self._song.current_song_time,
                 "points_written": rec["next"], "point_count": len(rec["points"]),
                 "stop_at": rec["end"]}
+
+    # ── Locators / cue points ─────────────────────────────────────────────────
+
+    def _get_cue_points(self):
+        cues = []
+        for i, c in enumerate(self._song.cue_points):
+            cues.append({"index": i, "name": c.name, "time": c.time})
+        return {"cue_count": len(cues), "cue_points": cues}
+
+    def _cue_at_time(self, time, tol=0.05):
+        best = None
+        for c in self._song.cue_points:
+            if abs(c.time - time) <= tol:
+                if best is None or abs(c.time - time) < abs(best.time - time):
+                    best = c
+        return best
+
+    def _create_cue_point(self, time, name=None):
+        """Add a locator at `time`.
+
+        set_or_delete_cue toggles a cue at the playhead, but a current_song_time
+        set doesn't take effect until the current message finishes — so seek now
+        and toggle one tick later, once the playhead has actually moved."""
+        song = self._song
+        time = float(time)
+        song.current_song_time = time
+
+        def _do():
+            try:
+                song.set_or_delete_cue()
+                # Live returns fresh wrapper objects each access, so id()-diffing
+                # is unreliable; name the cue nearest the requested time instead.
+                if name is not None:
+                    c = self._cue_at_time(time, tol=2.0)
+                    if c is not None:
+                        c.name = name
+            except Exception as e:
+                self.log_message("Cue create error: " + str(e))
+        self.schedule_message(1, _do)
+        return {"scheduled": True, "requested_time": time, "name": name,
+                "note": "locator placed at the playhead; call get_cue_points to confirm"}
+
+    def _delete_cue_point(self, time=None, index=None):
+        song = self._song
+        cue = None
+        if index is not None:
+            if index < 0 or index >= len(song.cue_points):
+                raise IndexError("Cue index out of range")
+            cue = song.cue_points[index]
+        elif time is not None:
+            cue = self._cue_at_time(float(time))
+        if cue is None:
+            raise Exception("No cue point found to delete")
+        target_time = cue.time
+        song.current_song_time = target_time
+        before = len(song.cue_points)
+
+        def _do():
+            try:
+                # Only toggle if the playhead now sits on the target cue, so we
+                # remove it rather than accidentally adding a new one.
+                if self._cue_at_time(target_time) is not None:
+                    song.set_or_delete_cue()
+            except Exception as e:
+                self.log_message("Cue delete error: " + str(e))
+        self.schedule_message(1, _do)
+        return {"scheduled": True, "target_time": target_time,
+                "note": "call get_cue_points to confirm"}
+
+    def _jump_to_cue(self, index=None, name=None):
+        song = self._song
+        cue = None
+        if index is not None:
+            if index < 0 or index >= len(song.cue_points):
+                raise IndexError("Cue index out of range")
+            cue = song.cue_points[index]
+        elif name is not None:
+            for c in song.cue_points:
+                if c.name == name:
+                    cue = c
+                    break
+        if cue is None:
+            raise Exception("Cue point not found")
+        try:
+            cue.jump()
+        except Exception:
+            song.current_song_time = cue.time
+        return {"name": cue.name, "time": cue.time}
+
+    def _rename_cue_point(self, index, name):
+        song = self._song
+        if index < 0 or index >= len(song.cue_points):
+            raise IndexError("Cue index out of range")
+        song.cue_points[index].name = name
+        return {"index": index, "name": song.cue_points[index].name}
+
+    # ── Clip crop & warp markers ──────────────────────────────────────────────
+
+    def _crop_clip(self, track_index, clip_index):
+        """Crop a Session clip to its loop/markers (bakes the visible region)."""
+        clip = self._get_clip(track_index, clip_index)
+        clip.crop()
+        return {"clip_name": clip.name, "length": clip.length}
+
+    def _get_warp_markers(self, track_index, clip_index):
+        clip = self._get_clip(track_index, clip_index)
+        if not clip.is_audio_clip:
+            raise ValueError("Clip is not an audio clip")
+        markers = [{"index": i, "beat_time": m.beat_time, "sample_time": m.sample_time}
+                   for i, m in enumerate(clip.warp_markers)]
+        return {"clip_name": clip.name, "warping": clip.warping,
+                "marker_count": len(markers), "warp_markers": markers}
+
+    def _remove_warp_marker(self, track_index, clip_index, beat_time):
+        clip = self._get_clip(track_index, clip_index)
+        if not clip.is_audio_clip:
+            raise ValueError("Clip is not an audio clip")
+        # C++ signature: remove_warp_marker(beat_time) — identifies by beat time.
+        clip.remove_warp_marker(float(beat_time))
+        return {"clip_name": clip.name, "marker_count": len(clip.warp_markers)}
+
+    def _move_warp_marker(self, track_index, clip_index, beat_time, new_beat_time):
+        clip = self._get_clip(track_index, clip_index)
+        if not clip.is_audio_clip:
+            raise ValueError("Clip is not an audio clip")
+        # C++ signature: move_warp_marker(marker_beat_time, beat_time_distance).
+        clip.move_warp_marker(float(beat_time), float(new_beat_time) - float(beat_time))
+        return {"clip_name": clip.name, "marker_count": len(clip.warp_markers)}
+
+    # ── Take lanes (comping) ──────────────────────────────────────────────────
+
+    def _get_take_lanes(self, track_index):
+        track = self._get_track_by_index(track_index, "regular")
+        lanes = getattr(track, "take_lanes", None)
+        if lanes is None:
+            return {"supported": False, "take_lanes": []}
+        out = []
+        for i, lane in enumerate(lanes):
+            out.append({"index": i, "name": getattr(lane, "name", ""),
+                        "clip_count": len(getattr(lane, "clips", []))})
+        return {"supported": True, "lane_count": len(out), "take_lanes": out}
+
+    def _create_take_lane(self, track_index):
+        track = self._get_track_by_index(track_index, "regular")
+        if not hasattr(track, "create_take_lane"):
+            raise Exception("Take lanes are not supported in this Live version")
+        track.create_take_lane()
+        return {"lane_count": len(track.take_lanes)}
+
+    # ── Clip automation introspection ─────────────────────────────────────────
+
+    def _get_clip_envelopes(self, track_index, clip_index):
+        """Report which device parameters have automation envelopes in a clip.
+
+        The LOM exposes envelopes but not their parameter mapping directly, so we
+        probe each device parameter and report the ones that have an envelope."""
+        clip = self._get_clip(track_index, clip_index)
+        track = self._song.tracks[track_index]
+        result = {"clip_name": clip.name, "has_envelopes": bool(clip.has_envelopes),
+                  "automated": []}
+        if not clip.has_envelopes:
+            return result
+        for di, device in enumerate(track.devices):
+            for pi, p in enumerate(device.parameters):
+                try:
+                    env = clip.automation_envelope(p)
+                except Exception:
+                    env = None
+                if env is not None:
+                    entry = {"device_index": di, "device_name": device.name,
+                             "parameter_index": pi, "parameter_name": p.name}
+                    try:
+                        entry["value_at_0"] = env.value_at_time(0.0)
+                        entry["value_at_end"] = env.value_at_time(max(0.0, clip.length - 0.001))
+                    except Exception:
+                        pass
+                    result["automated"].append(entry)
+        return result
 
     # ── Browser implementations ───────────────────────────────────────────────
 

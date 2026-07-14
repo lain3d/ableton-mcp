@@ -156,6 +156,9 @@ and workflow control (60 tools in total). Grouped by area:
 - Playback/transport control; move the arrangement playhead; build arrangements
 - Arrangement clip editing: move, duplicate, and delete clips on the timeline,
   and set their content window / loop
+- Locators (arrangement cue points): create, name, jump to, delete
+- Clip crop; move/remove warp markers; take lanes (comping); read a clip's
+  automation envelopes
 - Undo / redo / capture MIDI; change tempo and time signature
 - Metronome, arrangement/session record, arrangement loop region
 - Colors (track / clip / scene); fold group tracks; select tracks/scenes and
@@ -288,10 +291,13 @@ Verified against the running LOM (Live 12.3):
   *DeviceParameter*, and there is no MIDI-CC parameter object in the LOM to pass
   it. Confirmed: a MIDI clip exposes `automation_envelope` but nothing that maps
   to a raw CC lane.
-- **No warp-marker editing** (only warp on/off + mode) and **no device
-  reordering** within a chain.
+- **No device reordering** within a chain.
 - **Can't create group tracks** — the API can fold/unfold existing groups but
   has no call to group tracks in the first place.
+- **Can't *add* warp markers** — `WarpMarker` can't be constructed from Python
+  (`no registered converter ... from dict`), so new markers can't be inserted.
+  You *can* move and remove the markers a clip already has (`move_warp_marker` /
+  `remove_warp_marker`).
 
 ### Limitations — softer than they look (bypasses exist)
 

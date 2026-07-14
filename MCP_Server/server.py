@@ -141,6 +141,8 @@ class AbletonConnection:
             "select_track", "select_scene", "show_view",
             "subscribe", "unsubscribe",
             "record_automation", "stop_automation_recording",
+            "create_cue_point", "delete_cue_point", "jump_to_cue", "rename_cue_point",
+            "crop_clip", "remove_warp_marker", "move_warp_marker", "create_take_lane",
             # Arrangement view commands
             "switch_to_arrangement_view", "set_current_song_time",
             "duplicate_session_clip_to_arrangement",
@@ -2299,6 +2301,259 @@ def list_subscriptions(ctx: Context, user_prompt: str = "") -> str:
     except Exception as e:
         logger.error(f"Error listing subscriptions: {str(e)}")
         return f"Error listing subscriptions: {str(e)}"
+
+
+# ── Locators / cue points ───────────────────────────────────────────────────────
+
+@mcp.tool()
+@telemetry_tool("get_cue_points")
+def get_cue_points(ctx: Context, user_prompt: str = "") -> str:
+    """
+    List the arrangement locators (cue points): index, name, and beat time.
+
+    Parameters:
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("get_cue_points", {})
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        logger.error(f"Error getting cue points: {str(e)}")
+        return f"Error getting cue points: {str(e)}"
+
+
+@mcp.tool()
+@telemetry_tool("create_cue_point")
+def create_cue_point(ctx: Context, time: float, name: str = None, user_prompt: str = "") -> str:
+    """
+    Add an arrangement locator at a beat position (optionally named).
+
+    The locator is placed at the playhead a moment after seeking, so the call
+    returns before it's confirmed — call get_cue_points to see the result.
+
+    Parameters:
+    - time: Beat position for the locator
+    - name: Optional locator name
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("create_cue_point", {"time": time, "name": name})
+        return f"Placing locator{f' \"{name}\"' if name else ''} at beat {time} (call get_cue_points to confirm)"
+    except Exception as e:
+        logger.error(f"Error creating cue point: {str(e)}")
+        return f"Error creating cue point: {str(e)}"
+
+
+@mcp.tool()
+@telemetry_tool("delete_cue_point")
+def delete_cue_point(ctx: Context, index: int = None, time: float = None, user_prompt: str = "") -> str:
+    """
+    Delete an arrangement locator, by index (preferred) or by beat time.
+
+    Parameters:
+    - index: Index of the locator in get_cue_points (preferred)
+    - time: Beat time of the locator (alternative to index)
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("delete_cue_point", {"index": index, "time": time})
+        return "Deleting locator (call get_cue_points to confirm)"
+    except Exception as e:
+        logger.error(f"Error deleting cue point: {str(e)}")
+        return f"Error deleting cue point: {str(e)}"
+
+
+@mcp.tool()
+@telemetry_tool("jump_to_cue")
+def jump_to_cue(ctx: Context, index: int = None, name: str = None, user_prompt: str = "") -> str:
+    """
+    Move the playhead to an arrangement locator, by index or by name.
+
+    Parameters:
+    - index: Index of the locator (from get_cue_points)
+    - name: Name of the locator (alternative to index)
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("jump_to_cue", {"index": index, "name": name})
+        return f"Jumped to locator '{result.get('name')}' at beat {result.get('time')}"
+    except Exception as e:
+        logger.error(f"Error jumping to cue: {str(e)}")
+        return f"Error jumping to cue: {str(e)}"
+
+
+@mcp.tool()
+@telemetry_tool("rename_cue_point")
+def rename_cue_point(ctx: Context, index: int, name: str, user_prompt: str = "") -> str:
+    """
+    Rename an arrangement locator.
+
+    Parameters:
+    - index: Index of the locator (from get_cue_points)
+    - name: New name
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("rename_cue_point", {"index": index, "name": name})
+        return f"Renamed locator {index} to '{result.get('name', name)}'"
+    except Exception as e:
+        logger.error(f"Error renaming cue point: {str(e)}")
+        return f"Error renaming cue point: {str(e)}"
+
+
+# ── Clip crop, warp markers, take lanes, envelope introspection ──────────────────
+
+@mcp.tool()
+@telemetry_tool("crop_clip")
+def crop_clip(ctx: Context, track_index: int, clip_index: int, user_prompt: str = "") -> str:
+    """
+    Crop a Session clip to its loop / start-end markers (bakes the visible region;
+    for a MIDI clip trims to the loop, for audio it crops the sample region).
+
+    Parameters:
+    - track_index: Index of the track containing the clip
+    - clip_index: Index of the clip slot
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("crop_clip", {"track_index": track_index, "clip_index": clip_index})
+        return f"Cropped '{result.get('clip_name', clip_index)}' to {result.get('length')} beats"
+    except Exception as e:
+        logger.error(f"Error cropping clip: {str(e)}")
+        return f"Error cropping clip: {str(e)}"
+
+
+@mcp.tool()
+@telemetry_tool("get_warp_markers")
+def get_warp_markers(ctx: Context, track_index: int, clip_index: int, user_prompt: str = "") -> str:
+    """
+    List an audio clip's warp markers (each with beat_time and sample_time).
+
+    Parameters:
+    - track_index: Index of the audio track
+    - clip_index: Index of the clip slot
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("get_warp_markers", {"track_index": track_index, "clip_index": clip_index})
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        logger.error(f"Error getting warp markers: {str(e)}")
+        return f"Error getting warp markers: {str(e)}"
+
+
+@mcp.tool()
+@telemetry_tool("move_warp_marker")
+def move_warp_marker(ctx: Context, track_index: int, clip_index: int, beat_time: float, new_beat_time: float, user_prompt: str = "") -> str:
+    """
+    Move an existing warp marker to a new beat position (shifts the warp).
+
+    Note: adding brand-new warp markers isn't possible via the Live API (the
+    marker object can't be constructed from Python) — you can move or remove the
+    markers a clip already has. Use get_warp_markers to see them.
+
+    Parameters:
+    - track_index: Index of the audio track
+    - clip_index: Index of the clip slot
+    - beat_time: Current beat_time of the marker to move
+    - new_beat_time: Target beat_time
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("move_warp_marker", {"track_index": track_index, "clip_index": clip_index, "beat_time": beat_time, "new_beat_time": new_beat_time})
+        return f"Moved warp marker to beat {new_beat_time} ({result.get('marker_count')} markers)"
+    except Exception as e:
+        logger.error(f"Error moving warp marker: {str(e)}")
+        return f"Error moving warp marker: {str(e)}"
+
+
+@mcp.tool()
+@telemetry_tool("remove_warp_marker")
+def remove_warp_marker(ctx: Context, track_index: int, clip_index: int, beat_time: float, user_prompt: str = "") -> str:
+    """
+    Remove an existing warp marker (identified by its beat_time).
+
+    Parameters:
+    - track_index: Index of the audio track
+    - clip_index: Index of the clip slot
+    - beat_time: beat_time of the marker to remove (see get_warp_markers)
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("remove_warp_marker", {"track_index": track_index, "clip_index": clip_index, "beat_time": beat_time})
+        return f"Removed warp marker at beat {beat_time} ({result.get('marker_count')} remain)"
+    except Exception as e:
+        logger.error(f"Error removing warp marker: {str(e)}")
+        return f"Error removing warp marker: {str(e)}"
+
+
+@mcp.tool()
+@telemetry_tool("get_take_lanes")
+def get_take_lanes(ctx: Context, track_index: int, user_prompt: str = "") -> str:
+    """
+    List a track's take lanes (comping lanes): index, name, and clip count.
+
+    Parameters:
+    - track_index: Index of the track
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("get_take_lanes", {"track_index": track_index})
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        logger.error(f"Error getting take lanes: {str(e)}")
+        return f"Error getting take lanes: {str(e)}"
+
+
+@mcp.tool()
+@telemetry_tool("create_take_lane")
+def create_take_lane(ctx: Context, track_index: int, user_prompt: str = "") -> str:
+    """
+    Add a take lane to a track (for comping).
+
+    Parameters:
+    - track_index: Index of the track
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("create_take_lane", {"track_index": track_index})
+        return f"Created take lane ({result.get('lane_count')} lanes)"
+    except Exception as e:
+        logger.error(f"Error creating take lane: {str(e)}")
+        return f"Error creating take lane: {str(e)}"
+
+
+@mcp.tool()
+@telemetry_tool("get_clip_envelopes")
+def get_clip_envelopes(ctx: Context, track_index: int, clip_index: int, user_prompt: str = "") -> str:
+    """
+    List which device parameters have automation envelopes in a clip, with their
+    values at the clip's start and end. Complements set_clip_envelope by letting
+    you read back what a clip already automates.
+
+    Parameters:
+    - track_index: Index of the track containing the clip
+    - clip_index: Index of the clip slot
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("get_clip_envelopes", {"track_index": track_index, "clip_index": clip_index})
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        logger.error(f"Error getting clip envelopes: {str(e)}")
+        return f"Error getting clip envelopes: {str(e)}"
 
 
 # ── Automation recording ────────────────────────────────────────────────────────
