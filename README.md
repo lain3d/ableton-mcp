@@ -161,6 +161,11 @@ and workflow control (60 tools in total). Grouped by area:
 - `batch` — run many operations in a single round-trip (~13× faster than
   issuing them one at a time); the whole batch is a single undo step
 
+**Reacting to the user (state observers)**
+- `subscribe` to Live changes (transport, selection, track/scene add-remove,
+  detail clip) and drain them with `poll_events` — so the assistant can respond
+  to what you do in Live, while the connection stays request/response
+
 ## Example Commands
 
 Here are some examples of what you can ask Claude to do:
@@ -226,12 +231,10 @@ be added here:
 
 These are supported by the API and are good candidates for future work:
 
-- **State observers** — push notifications when the user changes something in
-  Live, enabling reactive workflows (the server is currently request/response
-  only). This is the biggest remaining architectural step.
 - Overdub and punch in/out; tempo automation in the arrangement
 - Groove pool, crossfader assignment, and finer send/return routing
 - Simpler/Sampler sample loading by path
+- More observer targets (per-track mixer changes, clip-slot playing state)
 
 ## Contributing
 
