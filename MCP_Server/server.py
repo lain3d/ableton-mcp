@@ -182,7 +182,7 @@ class AbletonConnection:
             "subscribe", "unsubscribe",
             "record_automation", "stop_automation_recording",
             "create_cue_point", "delete_cue_point", "jump_to_cue", "rename_cue_point",
-            "crop_clip", "remove_warp_marker", "move_warp_marker", "create_take_lane",
+            "crop_clip", "add_warp_marker", "remove_warp_marker", "move_warp_marker", "create_take_lane",
             # Arrangement view commands
             "switch_to_arrangement_view", "set_current_song_time",
             "duplicate_session_clip_to_arrangement",
@@ -2490,14 +2490,42 @@ def get_warp_markers(ctx: Context, track_index: int, clip_index: int, user_promp
 
 
 @mcp.tool()
+@telemetry_tool("add_warp_marker")
+def add_warp_marker(ctx: Context, track_index: int, clip_index: int, beat_time: float, sample_time: float = None, user_prompt: str = "") -> str:
+    """
+    Add a warp marker to an audio clip at a beat position.
+
+    If sample_time (the audio position in seconds) is omitted, it's interpolated
+    from the clip's existing markers so the new marker pins the current position
+    without distorting the warp — then use move_warp_marker to warp from there.
+
+    Parameters:
+    - track_index: Index of the audio track
+    - clip_index: Index of the clip slot
+    - beat_time: Beat position for the new marker
+    - sample_time: Optional audio position (seconds); auto-interpolated if omitted
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        ableton = get_ableton_connection()
+        params = {"track_index": track_index, "clip_index": clip_index, "beat_time": beat_time}
+        if sample_time is not None:
+            params["sample_time"] = sample_time
+        result = ableton.send_command("add_warp_marker", params)
+        return f"Added warp marker at beat {result.get('beat_time')} (sample {result.get('sample_time'):.3f}s); {result.get('marker_count')} markers"
+    except Exception as e:
+        logger.error(f"Error adding warp marker: {str(e)}")
+        return f"Error adding warp marker: {str(e)}"
+
+
+@mcp.tool()
 @telemetry_tool("move_warp_marker")
 def move_warp_marker(ctx: Context, track_index: int, clip_index: int, beat_time: float, new_beat_time: float, user_prompt: str = "") -> str:
     """
     Move an existing warp marker to a new beat position (shifts the warp).
 
-    Note: adding brand-new warp markers isn't possible via the Live API (the
-    marker object can't be constructed from Python) — you can move or remove the
-    markers a clip already has. Use get_warp_markers to see them.
+    Use get_warp_markers to see current markers, add_warp_marker to insert new
+    ones, then move them to warp the audio.
 
     Parameters:
     - track_index: Index of the audio track

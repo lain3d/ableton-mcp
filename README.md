@@ -157,7 +157,7 @@ and workflow control (60 tools in total). Grouped by area:
 - Arrangement clip editing: move, duplicate, and delete clips on the timeline,
   and set their content window / loop
 - Locators (arrangement cue points): create, name, jump to, delete
-- Clip crop; move/remove warp markers; take lanes (comping); read a clip's
+- Clip crop; add/move/remove warp markers; take lanes (comping); read a clip's
   automation envelopes
 - Undo / redo / capture MIDI; change tempo and time signature
 - Metronome, arrangement/session record, arrangement loop region
@@ -181,19 +181,47 @@ and workflow control (60 tools in total). Grouped by area:
 
 ## Example Commands
 
-Here are some examples of what you can ask Claude to do:
+This fork goes well beyond "make a track and some clips." Grouped by what's
+newly possible, here's an honest picture of what you can ask for.
 
+**Session & sound design**
 - "Create an 80s synthwave track" [Demo](https://youtu.be/VH9g66e42XA)
-- "Create a Metro Boomin style hip-hop beat"
-- "Create a full arrangement with an intro, buildup, drop, breakdown, and outro"
-- "Create a new MIDI track with a synth bass instrument"
-- "Add reverb to my drums"
-- "Create a 4-bar MIDI clip with a simple melody"
-- "Get information about the current Ableton session"
-- "Load a 808 drum rack into the selected track"
-- "Add a jazz chord progression to the clip in track 1"
-- "Set the tempo to 120 BPM"
-- "Play the clip in track 2"
+- "Make a Metro Boomin style hip-hop beat with an 808 drum rack"
+- "Add a jazz chord progression to the clip in track 1, then humanize it"
+  (per-note velocity, probability, and timing)
+- "Load Auto Filter on the drums and sweep the cutoff across the clip"
+  (clip automation for any device parameter, incl. devices nested in racks)
+- "Turn up the reverb send on the vocals and pan them slightly left"
+  (full mixer control: volume / pan / sends / mute / solo)
+
+**Arranging**
+- "Build a full arrangement — intro, buildup, drop, breakdown, outro"
+- "Move the chorus clip to bar 33 and duplicate it to bar 49"
+  (real arrangement-clip move / duplicate / delete)
+- "Drop locators at each section and name them"
+- "Automate a filter sweep and a volume swell into the drop"
+
+**Things that need the record-it escape hatch**
+- "Add a tempo ramp from 120 to 140 into the chorus" (recorded as real tempo
+  automation — clip envelopes can't touch song tempo)
+- "Fade the whole mix out over the last 8 bars" (master-bus automation via
+  recording)
+
+**Iterating with you, live**
+- "Watch what I do and mute the other tracks whenever I solo one"
+  (state observers: subscribe + poll for your changes)
+- "What's in my session right now?" / "Read back the notes in this clip"
+
+**Editing & analysis**
+- "Quantize the hats to 1/16 and shorten their release" 
+- "Crop this clip to its loop" · "Nudge the warp marker at beat 4"
+- "How loud is the master right now?" (real audio analysis via the Max for Live
+  device — see `M4L/`)
+
+**Reality check — things it can't do (see Limitations):** it can't save or
+export/render your Set, generate raw audio from nothing (you supply samples),
+write MIDI CC lanes directly, or draw perfectly smooth automation curves
+(automation is stepped, or recorded).
 
 
 ## Troubleshooting
@@ -294,10 +322,6 @@ Verified against the running LOM (Live 12.3):
 - **No device reordering** within a chain.
 - **Can't create group tracks** — the API can fold/unfold existing groups but
   has no call to group tracks in the first place.
-- **Can't *add* warp markers** — `WarpMarker` can't be constructed from Python
-  (`no registered converter ... from dict`), so new markers can't be inserted.
-  You *can* move and remove the markers a clip already has (`move_warp_marker` /
-  `remove_warp_marker`).
 
 ### Limitations — softer than they look (bypasses exist)
 

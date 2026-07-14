@@ -257,7 +257,7 @@ class AbletonMCP(ControlSurface):
         "subscribe", "unsubscribe",
         "record_automation", "stop_automation_recording",
         "create_cue_point", "delete_cue_point", "jump_to_cue", "rename_cue_point",
-        "crop_clip", "remove_warp_marker", "move_warp_marker",
+        "crop_clip", "add_warp_marker", "remove_warp_marker", "move_warp_marker",
         "create_take_lane",
         "switch_to_arrangement_view", "set_current_song_time",
         "duplicate_session_clip_to_arrangement",
@@ -507,6 +507,9 @@ class AbletonMCP(ControlSurface):
             return self._crop_clip(params.get("track_index", 0), params.get("clip_index", 0))
         elif command_type == "get_warp_markers":
             return self._get_warp_markers(params.get("track_index", 0), params.get("clip_index", 0))
+        elif command_type == "add_warp_marker":
+            return self._add_warp_marker(params.get("track_index", 0), params.get("clip_index", 0),
+                                         params.get("beat_time", 0.0), params.get("sample_time", None))
         elif command_type == "remove_warp_marker":
             return self._remove_warp_marker(params.get("track_index", 0), params.get("clip_index", 0),
                                             params.get("beat_time", 0.0))
@@ -2594,6 +2597,57 @@ class AbletonMCP(ControlSurface):
         clip = self._get_clip(track_index, clip_index)
         clip.crop()
         return {"clip_name": clip.name, "length": clip.length}
+
+    def _interp_sample_time(self, clip, beat_time):
+        """Estimate the sample_time (audio position) at a given warp beat_time by
+        interpolating the existing warp markers, so a new marker there keeps the
+        warp segments valid (Live rejects markers with an out-of-range segment)."""
+        markers = sorted(clip.warp_markers, key=lambda m: m.beat_time)
+        if not markers:
+            return float(beat_time)
+        lo = None
+        hi = None
+        for m in markers:
+            if m.beat_time <= beat_time:
+                lo = m
+            if m.beat_time >= beat_time and hi is None:
+                hi = m
+        if lo is not None and hi is not None:
+            if hi.beat_time == lo.beat_time:
+                return lo.sample_time
+            frac = (beat_time - lo.beat_time) / (hi.beat_time - lo.beat_time)
+            return lo.sample_time + frac * (hi.sample_time - lo.sample_time)
+        # Outside the marker range: extrapolate at the overall beat->sample rate.
+        m0, m1 = markers[0], markers[-1]
+        if m1.beat_time != m0.beat_time:
+            rate = (m1.sample_time - m0.sample_time) / (m1.beat_time - m0.beat_time)
+        else:
+            rate = 1.0
+        ref = lo if lo is not None else hi
+        return ref.sample_time + (beat_time - ref.beat_time) * rate
+
+    def _add_warp_marker(self, track_index, clip_index, beat_time, sample_time=None):
+        """Add a warp marker at beat_time. WarpMarker can't be built from a dict,
+        but Live.Clip.WarpMarker(beat_time, sample_time) constructs one; when
+        sample_time is omitted we interpolate it so the marker doesn't distort
+        the warp (it pins the current position, ready to be moved)."""
+        clip = self._get_clip(track_index, clip_index)
+        if not clip.is_audio_clip:
+            raise ValueError("Clip is not an audio clip")
+        WM = getattr(Live.Clip, "WarpMarker", None)
+        if WM is None:
+            raise Exception("WarpMarker type unavailable in this Live version")
+        bt = float(beat_time)
+        st = float(sample_time) if sample_time is not None else self._interp_sample_time(clip, bt)
+        try:
+            # WarpMarker's constructor is (sample_time, beat_time) — verified by
+            # reading back a created marker, not (beat_time, sample_time).
+            clip.add_warp_marker(WM(st, bt))
+        except Exception as e:
+            raise Exception("Could not add warp marker at beat %s (sample_time %.4f): %s"
+                            % (bt, st, str(e)))
+        return {"clip_name": clip.name, "beat_time": bt, "sample_time": st,
+                "marker_count": len(clip.warp_markers)}
 
     def _get_warp_markers(self, track_index, clip_index):
         clip = self._get_clip(track_index, clip_index)
