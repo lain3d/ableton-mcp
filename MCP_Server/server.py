@@ -111,10 +111,15 @@ class AbletonConnection:
         
         # Check if this is a state-modifying command
         is_modifying_command = command_type in [
-            "create_midi_track", "create_audio_track", "set_track_name",
+            "create_midi_track", "create_audio_track", "create_return_track",
+            "set_track_name",
             "create_clip", "create_audio_clip", "add_notes_to_clip", "set_clip_name",
-            "set_tempo", "fire_clip", "stop_clip", "set_device_parameter",
+            "set_tempo", "fire_clip", "stop_clip",
             "start_playback", "stop_playback", "load_instrument_or_effect",
+            # Mixer, device parameters, track management
+            "set_track_volume", "set_track_pan", "set_track_send",
+            "set_track_mute", "set_track_solo", "set_track_arm",
+            "delete_track", "duplicate_track", "set_device_parameter",
             # Arrangement view commands
             "switch_to_arrangement_view", "set_current_song_time",
             "duplicate_session_clip_to_arrangement"
@@ -839,6 +844,274 @@ def duplicate_to_arrangement(
     except Exception as e:
         logger.error(f"Error duplicating clip to arrangement: {str(e)}")
         return f"Error duplicating clip to arrangement: {str(e)}"
+
+
+# ── Audio tracks, mixer & device parameters ───────────────────────────────────
+
+@mcp.tool()
+@telemetry_tool("create_audio_track")
+def create_audio_track(ctx: Context, index: int = -1, user_prompt: str = "") -> str:
+    """
+    Create a new audio track in the Ableton session.
+
+    Parameters:
+    - index: The index to insert the track at (-1 = end of list)
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("create_audio_track", {"index": index})
+        return f"Created audio track '{result.get('name', '?')}' at index {result.get('index', '?')}"
+    except Exception as e:
+        logger.error(f"Error creating audio track: {str(e)}")
+        return f"Error creating audio track: {str(e)}"
+
+
+@mcp.tool()
+@telemetry_tool("create_return_track")
+def create_return_track(ctx: Context, user_prompt: str = "") -> str:
+    """
+    Create a new return track (for sends/aux effects). Appended after existing returns.
+
+    Parameters:
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("create_return_track", {})
+        return f"Created return track '{result.get('name', '?')}' at return index {result.get('index', '?')}"
+    except Exception as e:
+        logger.error(f"Error creating return track: {str(e)}")
+        return f"Error creating return track: {str(e)}"
+
+
+@mcp.tool()
+@telemetry_tool("set_track_volume")
+def set_track_volume(ctx: Context, track_index: int, value: float, track_type: str = "regular", user_prompt: str = "") -> str:
+    """
+    Set a track's volume fader.
+
+    Parameters:
+    - track_index: Index of the track (ignored when track_type is 'master')
+    - value: Normalized volume 0.0-1.0, where ~0.85 = 0 dB and 1.0 = +6 dB
+    - track_type: 'regular' (default), 'return', or 'master'
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("set_track_volume", {"track_index": track_index, "value": value, "track_type": track_type})
+        return f"Set volume of '{result.get('name', track_index)}' to {result.get('volume', value):.3f}"
+    except Exception as e:
+        logger.error(f"Error setting track volume: {str(e)}")
+        return f"Error setting track volume: {str(e)}"
+
+
+@mcp.tool()
+@telemetry_tool("set_track_pan")
+def set_track_pan(ctx: Context, track_index: int, value: float, track_type: str = "regular", user_prompt: str = "") -> str:
+    """
+    Set a track's pan position.
+
+    Parameters:
+    - track_index: Index of the track (ignored when track_type is 'master')
+    - value: -1.0 (hard left) .. 0.0 (center) .. 1.0 (hard right)
+    - track_type: 'regular' (default), 'return', or 'master'
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("set_track_pan", {"track_index": track_index, "value": value, "track_type": track_type})
+        return f"Set pan of '{result.get('name', track_index)}' to {result.get('panning', value):.3f}"
+    except Exception as e:
+        logger.error(f"Error setting track pan: {str(e)}")
+        return f"Error setting track pan: {str(e)}"
+
+
+@mcp.tool()
+@telemetry_tool("set_track_send")
+def set_track_send(ctx: Context, track_index: int, send_index: int, value: float, user_prompt: str = "") -> str:
+    """
+    Set a track's send level to a return track.
+
+    Parameters:
+    - track_index: Index of the (regular) track
+    - send_index: Index of the send (0 = send A, 1 = send B, ...)
+    - value: Normalized send amount 0.0-1.0
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("set_track_send", {"track_index": track_index, "send_index": send_index, "value": value})
+        return f"Set send {send_index} of '{result.get('name', track_index)}' to {result.get('value', value):.3f}"
+    except Exception as e:
+        logger.error(f"Error setting track send: {str(e)}")
+        return f"Error setting track send: {str(e)}"
+
+
+@mcp.tool()
+@telemetry_tool("set_track_mute")
+def set_track_mute(ctx: Context, track_index: int, mute: bool = True, track_type: str = "regular", user_prompt: str = "") -> str:
+    """
+    Mute or unmute a track.
+
+    Parameters:
+    - track_index: Index of the track
+    - mute: True to mute, False to unmute
+    - track_type: 'regular' (default) or 'return'
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("set_track_mute", {"track_index": track_index, "mute": mute, "track_type": track_type})
+        return f"Set mute of '{result.get('name', track_index)}' to {result.get('mute', mute)}"
+    except Exception as e:
+        logger.error(f"Error setting track mute: {str(e)}")
+        return f"Error setting track mute: {str(e)}"
+
+
+@mcp.tool()
+@telemetry_tool("set_track_solo")
+def set_track_solo(ctx: Context, track_index: int, solo: bool = True, track_type: str = "regular", user_prompt: str = "") -> str:
+    """
+    Solo or unsolo a track.
+
+    Parameters:
+    - track_index: Index of the track
+    - solo: True to solo, False to unsolo
+    - track_type: 'regular' (default) or 'return'
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("set_track_solo", {"track_index": track_index, "solo": solo, "track_type": track_type})
+        return f"Set solo of '{result.get('name', track_index)}' to {result.get('solo', solo)}"
+    except Exception as e:
+        logger.error(f"Error setting track solo: {str(e)}")
+        return f"Error setting track solo: {str(e)}"
+
+
+@mcp.tool()
+@telemetry_tool("set_track_arm")
+def set_track_arm(ctx: Context, track_index: int, arm: bool = True, user_prompt: str = "") -> str:
+    """
+    Arm or disarm a track for recording.
+
+    Parameters:
+    - track_index: Index of the track
+    - arm: True to arm, False to disarm
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("set_track_arm", {"track_index": track_index, "arm": arm})
+        return f"Set arm of '{result.get('name', track_index)}' to {result.get('arm', arm)}"
+    except Exception as e:
+        logger.error(f"Error setting track arm: {str(e)}")
+        return f"Error setting track arm: {str(e)}"
+
+
+@mcp.tool()
+@telemetry_tool("delete_track")
+def delete_track(ctx: Context, track_index: int, user_prompt: str = "") -> str:
+    """
+    Delete a track from the session.
+
+    Parameters:
+    - track_index: Index of the track to delete
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("delete_track", {"track_index": track_index})
+        return f"Deleted track '{result.get('deleted_name', track_index)}' ({result.get('track_count', '?')} tracks remain)"
+    except Exception as e:
+        logger.error(f"Error deleting track: {str(e)}")
+        return f"Error deleting track: {str(e)}"
+
+
+@mcp.tool()
+@telemetry_tool("duplicate_track")
+def duplicate_track(ctx: Context, track_index: int, user_prompt: str = "") -> str:
+    """
+    Duplicate a track (including its clips and devices). The copy is inserted right after it.
+
+    Parameters:
+    - track_index: Index of the track to duplicate
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("duplicate_track", {"track_index": track_index})
+        return f"Duplicated track to '{result.get('name', '?')}' at index {result.get('index', '?')}"
+    except Exception as e:
+        logger.error(f"Error duplicating track: {str(e)}")
+        return f"Error duplicating track: {str(e)}"
+
+
+@mcp.tool()
+@telemetry_tool("get_device_parameters")
+def get_device_parameters(ctx: Context, track_index: int, device_index: int, track_type: str = "regular", user_prompt: str = "") -> str:
+    """
+    List all parameters of a device on a track, with current value, range, and display value.
+
+    Use this before set_device_parameter to discover parameter names/indices and valid ranges.
+
+    Parameters:
+    - track_index: Index of the track holding the device
+    - device_index: Index of the device in the track's device chain (0 = first)
+    - track_type: 'regular' (default), 'return', or 'master'
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("get_device_parameters", {"track_index": track_index, "device_index": device_index, "track_type": track_type})
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        logger.error(f"Error getting device parameters: {str(e)}")
+        return f"Error getting device parameters: {str(e)}"
+
+
+@mcp.tool()
+@telemetry_tool("set_device_parameter")
+def set_device_parameter(
+    ctx: Context,
+    track_index: int,
+    device_index: int,
+    value: float,
+    parameter_index: int = None,
+    parameter_name: str = None,
+    track_type: str = "regular",
+    user_prompt: str = ""
+) -> str:
+    """
+    Set a device parameter (e.g. a filter cutoff, compressor threshold, reverb size).
+
+    Provide either parameter_index or parameter_name to identify the knob. The value is
+    clamped to the parameter's valid range. Call get_device_parameters first to see options.
+
+    Parameters:
+    - track_index: Index of the track holding the device
+    - device_index: Index of the device in the track's device chain (0 = first)
+    - value: The new value (in the parameter's own units/range)
+    - parameter_index: Index of the parameter to set (optional if parameter_name given)
+    - parameter_name: Name of the parameter to set, case-insensitive (optional if parameter_index given)
+    - track_type: 'regular' (default), 'return', or 'master'
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        ableton = get_ableton_connection()
+        params = {"track_index": track_index, "device_index": device_index, "value": value, "track_type": track_type}
+        if parameter_index is not None:
+            params["parameter_index"] = parameter_index
+        if parameter_name is not None:
+            params["parameter_name"] = parameter_name
+        result = ableton.send_command("set_device_parameter", params)
+        disp = result.get("display_value")
+        disp_str = f" ({disp})" if disp else ""
+        return f"Set '{result.get('parameter_name', '?')}' on '{result.get('device_name', '?')}' to {result.get('value', value)}{disp_str}"
+    except Exception as e:
+        logger.error(f"Error setting device parameter: {str(e)}")
+        return f"Error setting device parameter: {str(e)}"
 
 
 # Main execution

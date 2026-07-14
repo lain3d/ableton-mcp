@@ -231,6 +231,11 @@ class AbletonMCP(ControlSurface):
                                  "create_clip", "create_audio_clip", "add_notes_to_clip", "set_clip_name",
                                  "set_tempo", "fire_clip", "stop_clip",
                                  "start_playback", "stop_playback", "load_browser_item",
+                                 # Audio tracks, mixer & device parameters
+                                 "create_audio_track", "create_return_track",
+                                 "set_track_volume", "set_track_pan", "set_track_send",
+                                 "set_track_mute", "set_track_solo", "set_track_arm",
+                                 "delete_track", "duplicate_track", "set_device_parameter",
                                  # Arrangement view – must run on the main thread
                                  "switch_to_arrangement_view", "set_current_song_time",
                                  "duplicate_session_clip_to_arrangement"]:
@@ -291,6 +296,46 @@ class AbletonMCP(ControlSurface):
                             track_index = params.get("track_index", 0)
                             item_uri = params.get("item_uri", "")
                             result = self._load_browser_item(track_index, item_uri)
+                        # ── Audio tracks, mixer & device parameters ─────────────────
+                        elif command_type == "create_audio_track":
+                            result = self._create_audio_track(params.get("index", -1))
+                        elif command_type == "create_return_track":
+                            result = self._create_return_track()
+                        elif command_type == "set_track_volume":
+                            result = self._set_track_volume(
+                                params.get("track_index", 0), params.get("value", 0.85),
+                                params.get("track_type", "regular"))
+                        elif command_type == "set_track_pan":
+                            result = self._set_track_pan(
+                                params.get("track_index", 0), params.get("value", 0.0),
+                                params.get("track_type", "regular"))
+                        elif command_type == "set_track_send":
+                            result = self._set_track_send(
+                                params.get("track_index", 0), params.get("send_index", 0),
+                                params.get("value", 0.0))
+                        elif command_type == "set_track_mute":
+                            result = self._set_track_mute(
+                                params.get("track_index", 0), params.get("mute", True),
+                                params.get("track_type", "regular"))
+                        elif command_type == "set_track_solo":
+                            result = self._set_track_solo(
+                                params.get("track_index", 0), params.get("solo", True),
+                                params.get("track_type", "regular"))
+                        elif command_type == "set_track_arm":
+                            result = self._set_track_arm(
+                                params.get("track_index", 0), params.get("arm", True))
+                        elif command_type == "delete_track":
+                            result = self._delete_track(params.get("track_index", 0))
+                        elif command_type == "duplicate_track":
+                            result = self._duplicate_track(params.get("track_index", 0))
+                        elif command_type == "set_device_parameter":
+                            result = self._set_device_parameter(
+                                params.get("track_index", 0),
+                                params.get("device_index", 0),
+                                params.get("value", 0.0),
+                                params.get("parameter_index", None),
+                                params.get("parameter_name", None),
+                                params.get("track_type", "regular"))
                         # ── Arrangement view commands ──────────────────────────────
                         elif command_type == "switch_to_arrangement_view":
                             result = self._switch_to_arrangement_view()
@@ -356,6 +401,13 @@ class AbletonMCP(ControlSurface):
             elif command_type == "get_arrangement_clips":
                 track_index = params.get("track_index", 0)
                 response["result"] = self._get_arrangement_clips(track_index)
+            # Read-only device introspection
+            elif command_type == "get_device_parameters":
+                track_index = params.get("track_index", 0)
+                device_index = params.get("device_index", 0)
+                track_type = params.get("track_type", "regular")
+                response["result"] = self._get_device_parameters(
+                    track_index, device_index, track_type)
             else:
                 response["status"] = "error"
                 response["message"] = "Unknown command: " + command_type
@@ -834,6 +886,223 @@ class AbletonMCP(ControlSurface):
             }
         except Exception as e:
             self.log_message("Error duplicating clip to arrangement: " + str(e))
+            raise
+
+    # ── Mixer / track management / device parameters ──────────────────────────
+
+    def _get_track_by_index(self, track_index, track_type="regular"):
+        """Resolve a track from a (type, index) pair.
+
+        track_type: "regular" (song.tracks), "return" (song.return_tracks),
+        or "master" (song.master_track — track_index ignored).
+        """
+        if track_type == "master":
+            return self._song.master_track
+        if track_type == "return":
+            tracks = self._song.return_tracks
+        else:
+            tracks = self._song.tracks
+        if track_index < 0 or track_index >= len(tracks):
+            raise IndexError("Track index out of range")
+        return tracks[track_index]
+
+    def _create_audio_track(self, index):
+        """Create a new audio track at the specified index (-1 = end)."""
+        try:
+            self._song.create_audio_track(index)
+            new_track_index = len(self._song.tracks) - 1 if index == -1 else index
+            new_track = self._song.tracks[new_track_index]
+            return {"index": new_track_index, "name": new_track.name}
+        except Exception as e:
+            self.log_message("Error creating audio track: " + str(e))
+            raise
+
+    def _create_return_track(self):
+        """Create a new return track (appended after existing returns)."""
+        try:
+            self._song.create_return_track()
+            new_index = len(self._song.return_tracks) - 1
+            new_track = self._song.return_tracks[new_index]
+            return {"index": new_index, "name": new_track.name}
+        except Exception as e:
+            self.log_message("Error creating return track: " + str(e))
+            raise
+
+    def _set_track_volume(self, track_index, value, track_type="regular"):
+        """Set track volume. value is normalized 0.0-1.0 (0.85 ~= 0 dB)."""
+        try:
+            track = self._get_track_by_index(track_index, track_type)
+            param = track.mixer_device.volume
+            value = max(param.min, min(param.max, float(value)))
+            param.value = value
+            return {"name": track.name, "volume": param.value}
+        except Exception as e:
+            self.log_message("Error setting track volume: " + str(e))
+            raise
+
+    def _set_track_pan(self, track_index, value, track_type="regular"):
+        """Set track pan. value -1.0 (hard L) .. 0.0 (center) .. 1.0 (hard R)."""
+        try:
+            track = self._get_track_by_index(track_index, track_type)
+            param = track.mixer_device.panning
+            value = max(param.min, min(param.max, float(value)))
+            param.value = value
+            return {"name": track.name, "panning": param.value}
+        except Exception as e:
+            self.log_message("Error setting track pan: " + str(e))
+            raise
+
+    def _set_track_send(self, track_index, send_index, value):
+        """Set a send level on a regular track. value normalized 0.0-1.0."""
+        try:
+            track = self._get_track_by_index(track_index, "regular")
+            sends = track.mixer_device.sends
+            if send_index < 0 or send_index >= len(sends):
+                raise IndexError("Send index out of range")
+            param = sends[send_index]
+            value = max(param.min, min(param.max, float(value)))
+            param.value = value
+            return {"name": track.name, "send_index": send_index, "value": param.value}
+        except Exception as e:
+            self.log_message("Error setting track send: " + str(e))
+            raise
+
+    def _set_track_mute(self, track_index, mute, track_type="regular"):
+        try:
+            track = self._get_track_by_index(track_index, track_type)
+            track.mute = bool(mute)
+            return {"name": track.name, "mute": track.mute}
+        except Exception as e:
+            self.log_message("Error setting track mute: " + str(e))
+            raise
+
+    def _set_track_solo(self, track_index, solo, track_type="regular"):
+        try:
+            track = self._get_track_by_index(track_index, track_type)
+            track.solo = bool(solo)
+            return {"name": track.name, "solo": track.solo}
+        except Exception as e:
+            self.log_message("Error setting track solo: " + str(e))
+            raise
+
+    def _set_track_arm(self, track_index, arm):
+        try:
+            track = self._get_track_by_index(track_index, "regular")
+            if not getattr(track, "can_be_armed", False):
+                raise ValueError("Track %d cannot be armed" % track_index)
+            track.arm = bool(arm)
+            return {"name": track.name, "arm": track.arm}
+        except Exception as e:
+            self.log_message("Error setting track arm: " + str(e))
+            raise
+
+    def _delete_track(self, track_index):
+        try:
+            if track_index < 0 or track_index >= len(self._song.tracks):
+                raise IndexError("Track index out of range")
+            name = self._song.tracks[track_index].name
+            self._song.delete_track(track_index)
+            return {"deleted_index": track_index, "deleted_name": name,
+                    "track_count": len(self._song.tracks)}
+        except Exception as e:
+            self.log_message("Error deleting track: " + str(e))
+            raise
+
+    def _duplicate_track(self, track_index):
+        try:
+            if track_index < 0 or track_index >= len(self._song.tracks):
+                raise IndexError("Track index out of range")
+            self._song.duplicate_track(track_index)
+            # Live inserts the duplicate immediately after the source track.
+            new_index = track_index + 1
+            new_track = self._song.tracks[new_index]
+            return {"index": new_index, "name": new_track.name}
+        except Exception as e:
+            self.log_message("Error duplicating track: " + str(e))
+            raise
+
+    def _get_device_parameters(self, track_index, device_index, track_type="regular"):
+        """List a device's parameters with current value, range and display value."""
+        try:
+            track = self._get_track_by_index(track_index, track_type)
+            if device_index < 0 or device_index >= len(track.devices):
+                raise IndexError("Device index out of range")
+            device = track.devices[device_index]
+            params = []
+            for i, p in enumerate(device.parameters):
+                info = {
+                    "index": i,
+                    "name": p.name,
+                    "value": p.value,
+                    "min": p.min,
+                    "max": p.max,
+                    "is_quantized": p.is_quantized,
+                }
+                try:
+                    info["display_value"] = str(p.str_for_value(p.value))
+                except Exception:
+                    pass
+                if p.is_quantized:
+                    try:
+                        info["value_items"] = [str(v) for v in p.value_items]
+                    except Exception:
+                        pass
+                params.append(info)
+            return {
+                "track_name": track.name,
+                "device_index": device_index,
+                "device_name": device.name,
+                "class_name": device.class_name,
+                "parameters": params,
+            }
+        except Exception as e:
+            self.log_message("Error getting device parameters: " + str(e))
+            raise
+
+    def _set_device_parameter(self, track_index, device_index, value,
+                              parameter_index=None, parameter_name=None,
+                              track_type="regular"):
+        """Set a device parameter by index or by (case-insensitive) name."""
+        try:
+            track = self._get_track_by_index(track_index, track_type)
+            if device_index < 0 or device_index >= len(track.devices):
+                raise IndexError("Device index out of range")
+            device = track.devices[device_index]
+
+            param = None
+            if parameter_name is not None:
+                lname = str(parameter_name).lower()
+                for p in device.parameters:
+                    if p.name.lower() == lname:
+                        param = p
+                        break
+                if param is None:
+                    raise ValueError("Parameter '%s' not found on device '%s'"
+                                     % (parameter_name, device.name))
+            else:
+                if parameter_index is None:
+                    raise ValueError("Provide parameter_index or parameter_name")
+                if parameter_index < 0 or parameter_index >= len(device.parameters):
+                    raise IndexError("Parameter index out of range")
+                param = device.parameters[parameter_index]
+
+            if not getattr(param, "is_enabled", True):
+                raise ValueError("Parameter '%s' is not automatable" % param.name)
+
+            value = max(param.min, min(param.max, float(value)))
+            param.value = value
+            result = {
+                "device_name": device.name,
+                "parameter_name": param.name,
+                "value": param.value,
+            }
+            try:
+                result["display_value"] = str(param.str_for_value(param.value))
+            except Exception:
+                pass
+            return result
+        except Exception as e:
+            self.log_message("Error setting device parameter: " + str(e))
             raise
 
     # ── Browser implementations ───────────────────────────────────────────────
