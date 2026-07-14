@@ -2,6 +2,7 @@
 from __future__ import absolute_import, print_function, unicode_literals
 
 from _Framework.ControlSurface import ControlSurface
+import Live
 import os
 import socket
 import json
@@ -236,6 +237,9 @@ class AbletonMCP(ControlSurface):
                                  "set_track_volume", "set_track_pan", "set_track_send",
                                  "set_track_mute", "set_track_solo", "set_track_arm",
                                  "delete_track", "duplicate_track", "set_device_parameter",
+                                 # Clip content: notes, quantize, loop & audio warp
+                                 "remove_clip_notes", "quantize_clip", "set_clip_loop",
+                                 "set_clip_gain", "set_clip_pitch", "set_clip_warp",
                                  # Arrangement view – must run on the main thread
                                  "switch_to_arrangement_view", "set_current_song_time",
                                  "duplicate_session_clip_to_arrangement"]:
@@ -336,6 +340,45 @@ class AbletonMCP(ControlSurface):
                                 params.get("parameter_index", None),
                                 params.get("parameter_name", None),
                                 params.get("track_type", "regular"))
+                        # ── Clip content: notes, quantize, loop & audio warp ────────
+                        elif command_type == "remove_clip_notes":
+                            result = self._remove_clip_notes(
+                                params.get("track_index", 0),
+                                params.get("clip_index", 0),
+                                params.get("from_time", 0.0),
+                                params.get("from_pitch", 0),
+                                params.get("time_span", 1000000.0),
+                                params.get("pitch_span", 128))
+                        elif command_type == "quantize_clip":
+                            result = self._quantize_clip(
+                                params.get("track_index", 0),
+                                params.get("clip_index", 0),
+                                params.get("grid", "1/16"),
+                                params.get("amount", 1.0))
+                        elif command_type == "set_clip_loop":
+                            result = self._set_clip_loop(
+                                params.get("track_index", 0),
+                                params.get("clip_index", 0),
+                                params.get("looping", True),
+                                params.get("loop_start", None),
+                                params.get("loop_end", None))
+                        elif command_type == "set_clip_gain":
+                            result = self._set_clip_gain(
+                                params.get("track_index", 0),
+                                params.get("clip_index", 0),
+                                params.get("gain", 0.5))
+                        elif command_type == "set_clip_pitch":
+                            result = self._set_clip_pitch(
+                                params.get("track_index", 0),
+                                params.get("clip_index", 0),
+                                params.get("coarse", 0),
+                                params.get("fine", 0))
+                        elif command_type == "set_clip_warp":
+                            result = self._set_clip_warp(
+                                params.get("track_index", 0),
+                                params.get("clip_index", 0),
+                                params.get("warping", True),
+                                params.get("warp_mode", None))
                         # ── Arrangement view commands ──────────────────────────────
                         elif command_type == "switch_to_arrangement_view":
                             result = self._switch_to_arrangement_view()
@@ -408,6 +451,11 @@ class AbletonMCP(ControlSurface):
                 track_type = params.get("track_type", "regular")
                 response["result"] = self._get_device_parameters(
                     track_index, device_index, track_type)
+            # Read-only clip note introspection
+            elif command_type == "get_clip_notes":
+                track_index = params.get("track_index", 0)
+                clip_index = params.get("clip_index", 0)
+                response["result"] = self._get_clip_notes(track_index, clip_index)
             else:
                 response["status"] = "error"
                 response["message"] = "Unknown command: " + command_type
@@ -1103,6 +1151,166 @@ class AbletonMCP(ControlSurface):
             return result
         except Exception as e:
             self.log_message("Error setting device parameter: " + str(e))
+            raise
+
+    # ── Clip content: notes, quantize, loop & audio warp ──────────────────────
+
+    _QUANTIZATION_GRID = {
+        "1/4": "q_quarter",
+        "1/4t": "q_quarter_triplet",
+        "1/8": "q_eighth",
+        "1/8t": "q_eighth_triplet",
+        "1/16": "q_sixteenth",
+        "1/16t": "q_sixteenth_triplet",
+        "1/32": "q_thirtysecond",
+    }
+
+    def _get_clip(self, track_index, clip_index):
+        """Resolve a Session-view clip, raising a clear error if empty."""
+        if track_index < 0 or track_index >= len(self._song.tracks):
+            raise IndexError("Track index out of range")
+        track = self._song.tracks[track_index]
+        if clip_index < 0 or clip_index >= len(track.clip_slots):
+            raise IndexError("Clip index out of range")
+        clip_slot = track.clip_slots[clip_index]
+        if not clip_slot.has_clip:
+            raise Exception("No clip in slot")
+        return clip_slot.clip
+
+    def _read_notes(self, clip):
+        """Return a clip's notes as dicts, preferring the Live 11+ extended API.
+
+        The legacy get_notes/remove_notes calls are deprecated and the Remote
+        Script runtime raises their DeprecationWarning as an error, so use the
+        extended API when available and fall back only on older Live versions.
+        """
+        if hasattr(clip, "get_notes_extended"):
+            return [
+                {"pitch": n.pitch, "start_time": n.start_time, "duration": n.duration,
+                 "velocity": n.velocity, "mute": n.mute}
+                for n in clip.get_notes_extended(0, 128, 0.0, clip.length)
+            ]
+        return [
+            {"pitch": t[0], "start_time": t[1], "duration": t[2],
+             "velocity": t[3], "mute": t[4]}
+            for t in clip.get_notes(0.0, 0, clip.length, 128)
+        ]
+
+    def _get_clip_notes(self, track_index, clip_index):
+        """Read all MIDI notes from a clip as pitch/start/duration/velocity/mute."""
+        try:
+            clip = self._get_clip(track_index, clip_index)
+            if not clip.is_midi_clip:
+                raise ValueError("Clip is not a MIDI clip")
+            notes = self._read_notes(clip)
+            return {"clip_name": clip.name, "note_count": len(notes), "notes": notes}
+        except Exception as e:
+            self.log_message("Error getting clip notes: " + str(e))
+            raise
+
+    def _remove_clip_notes(self, track_index, clip_index, from_time, from_pitch,
+                           time_span, pitch_span):
+        """Remove MIDI notes within a time/pitch window (defaults clear everything)."""
+        try:
+            clip = self._get_clip(track_index, clip_index)
+            if not clip.is_midi_clip:
+                raise ValueError("Clip is not a MIDI clip")
+            # Note the extended API's argument order: (pitch, pitch_span, time, time_span).
+            if hasattr(clip, "remove_notes_extended"):
+                clip.remove_notes_extended(int(from_pitch), int(pitch_span),
+                                           from_time, time_span)
+            else:
+                clip.remove_notes(from_time, int(from_pitch), time_span, int(pitch_span))
+            remaining = len(self._read_notes(clip))
+            return {"clip_name": clip.name, "remaining_note_count": remaining}
+        except Exception as e:
+            self.log_message("Error removing clip notes: " + str(e))
+            raise
+
+    def _quantize_clip(self, track_index, clip_index, grid, amount):
+        """Quantize a clip to a grid. amount is 0.0-1.0 (1.0 = full quantize)."""
+        try:
+            clip = self._get_clip(track_index, clip_index)
+            enum_name = self._QUANTIZATION_GRID.get(grid)
+            if enum_name is None:
+                raise ValueError("Unknown grid '%s' (use one of %s)"
+                                 % (grid, ", ".join(sorted(self._QUANTIZATION_GRID))))
+            quant = getattr(Live.Song.Quantization, enum_name)
+            amount = max(0.0, min(1.0, float(amount)))
+            clip.quantize(quant, amount)
+            return {"clip_name": clip.name, "grid": grid, "amount": amount}
+        except Exception as e:
+            self.log_message("Error quantizing clip: " + str(e))
+            raise
+
+    def _set_clip_loop(self, track_index, clip_index, looping,
+                       loop_start=None, loop_end=None):
+        """Toggle looping and optionally set loop start/end (in beats)."""
+        try:
+            clip = self._get_clip(track_index, clip_index)
+            clip.looping = bool(looping)
+            # end must move before start when shrinking, so order the writes.
+            if loop_end is not None and loop_start is not None:
+                if loop_start <= clip.loop_end:
+                    clip.loop_start = float(loop_start)
+                    clip.loop_end = float(loop_end)
+                else:
+                    clip.loop_end = float(loop_end)
+                    clip.loop_start = float(loop_start)
+            elif loop_start is not None:
+                clip.loop_start = float(loop_start)
+            elif loop_end is not None:
+                clip.loop_end = float(loop_end)
+            return {"clip_name": clip.name, "looping": clip.looping,
+                    "loop_start": clip.loop_start, "loop_end": clip.loop_end}
+        except Exception as e:
+            self.log_message("Error setting clip loop: " + str(e))
+            raise
+
+    def _set_clip_gain(self, track_index, clip_index, gain):
+        """Set an audio clip's gain (normalized 0.0-1.0)."""
+        try:
+            clip = self._get_clip(track_index, clip_index)
+            if not clip.is_audio_clip:
+                raise ValueError("Clip is not an audio clip")
+            clip.gain = max(0.0, min(1.0, float(gain)))
+            result = {"clip_name": clip.name, "gain": clip.gain}
+            try:
+                result["gain_display"] = str(clip.gain_display_string)
+            except Exception:
+                pass
+            return result
+        except Exception as e:
+            self.log_message("Error setting clip gain: " + str(e))
+            raise
+
+    def _set_clip_pitch(self, track_index, clip_index, coarse, fine):
+        """Transpose an audio clip: coarse in semitones, fine in cents."""
+        try:
+            clip = self._get_clip(track_index, clip_index)
+            if not clip.is_audio_clip:
+                raise ValueError("Clip is not an audio clip")
+            clip.pitch_coarse = max(-48, min(48, int(coarse)))
+            clip.pitch_fine = max(-50, min(50, int(fine)))
+            return {"clip_name": clip.name, "pitch_coarse": clip.pitch_coarse,
+                    "pitch_fine": clip.pitch_fine}
+        except Exception as e:
+            self.log_message("Error setting clip pitch: " + str(e))
+            raise
+
+    def _set_clip_warp(self, track_index, clip_index, warping, warp_mode=None):
+        """Toggle warping on an audio clip and optionally set the warp mode index."""
+        try:
+            clip = self._get_clip(track_index, clip_index)
+            if not clip.is_audio_clip:
+                raise ValueError("Clip is not an audio clip")
+            clip.warping = bool(warping)
+            if warp_mode is not None:
+                clip.warp_mode = int(warp_mode)
+            return {"clip_name": clip.name, "warping": clip.warping,
+                    "warp_mode": clip.warp_mode}
+        except Exception as e:
+            self.log_message("Error setting clip warp: " + str(e))
             raise
 
     # ── Browser implementations ───────────────────────────────────────────────

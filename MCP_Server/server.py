@@ -120,6 +120,9 @@ class AbletonConnection:
             "set_track_volume", "set_track_pan", "set_track_send",
             "set_track_mute", "set_track_solo", "set_track_arm",
             "delete_track", "duplicate_track", "set_device_parameter",
+            # Clip content: notes, quantize, loop & audio warp
+            "remove_clip_notes", "quantize_clip", "set_clip_loop",
+            "set_clip_gain", "set_clip_pitch", "set_clip_warp",
             # Arrangement view commands
             "switch_to_arrangement_view", "set_current_song_time",
             "duplicate_session_clip_to_arrangement"
@@ -1112,6 +1115,196 @@ def set_device_parameter(
     except Exception as e:
         logger.error(f"Error setting device parameter: {str(e)}")
         return f"Error setting device parameter: {str(e)}"
+
+
+# ── Clip content: notes, quantize, loop & audio warp ──────────────────────────
+
+@mcp.tool()
+@telemetry_tool("get_clip_notes")
+def get_clip_notes(ctx: Context, track_index: int, clip_index: int, user_prompt: str = "") -> str:
+    """
+    Read the MIDI notes in a clip so you can inspect or iterate on them.
+
+    Returns each note's pitch, start_time (beats), duration (beats), velocity, and mute.
+
+    Parameters:
+    - track_index: Index of the track containing the clip
+    - clip_index: Index of the clip slot containing the clip
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("get_clip_notes", {"track_index": track_index, "clip_index": clip_index})
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        logger.error(f"Error getting clip notes: {str(e)}")
+        return f"Error getting clip notes: {str(e)}"
+
+
+@mcp.tool()
+@telemetry_tool("remove_clip_notes")
+def remove_clip_notes(
+    ctx: Context,
+    track_index: int,
+    clip_index: int,
+    from_time: float = 0.0,
+    from_pitch: int = 0,
+    time_span: float = 1000000.0,
+    pitch_span: int = 128,
+    user_prompt: str = ""
+) -> str:
+    """
+    Remove MIDI notes from a clip. With defaults, clears the whole clip; narrow the
+    window with from_time/time_span (beats) and from_pitch/pitch_span (MIDI note numbers).
+
+    Combine with add_notes_to_clip to replace a clip's contents.
+
+    Parameters:
+    - track_index: Index of the track containing the clip
+    - clip_index: Index of the clip slot containing the clip
+    - from_time: Start of the time window in beats (default 0.0)
+    - from_pitch: Lowest MIDI pitch to remove (default 0)
+    - time_span: Length of the time window in beats (default very large = to end)
+    - pitch_span: Number of pitches to span from from_pitch (default 128 = all)
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("remove_clip_notes", {
+            "track_index": track_index, "clip_index": clip_index,
+            "from_time": from_time, "from_pitch": from_pitch,
+            "time_span": time_span, "pitch_span": pitch_span
+        })
+        return f"Removed notes from '{result.get('clip_name', clip_index)}' ({result.get('remaining_note_count', '?')} notes remain)"
+    except Exception as e:
+        logger.error(f"Error removing clip notes: {str(e)}")
+        return f"Error removing clip notes: {str(e)}"
+
+
+@mcp.tool()
+@telemetry_tool("quantize_clip")
+def quantize_clip(ctx: Context, track_index: int, clip_index: int, grid: str = "1/16", amount: float = 1.0, user_prompt: str = "") -> str:
+    """
+    Quantize a clip's notes to a grid.
+
+    Parameters:
+    - track_index: Index of the track containing the clip
+    - clip_index: Index of the clip slot containing the clip
+    - grid: Grid resolution: '1/4', '1/4t', '1/8', '1/8t', '1/16', '1/16t', '1/32'
+            (the 't' variants are triplets)
+    - amount: Quantize strength 0.0-1.0 (1.0 = snap fully to grid)
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("quantize_clip", {
+            "track_index": track_index, "clip_index": clip_index, "grid": grid, "amount": amount
+        })
+        return f"Quantized '{result.get('clip_name', clip_index)}' to {grid} at {result.get('amount', amount)} strength"
+    except Exception as e:
+        logger.error(f"Error quantizing clip: {str(e)}")
+        return f"Error quantizing clip: {str(e)}"
+
+
+@mcp.tool()
+@telemetry_tool("set_clip_loop")
+def set_clip_loop(
+    ctx: Context,
+    track_index: int,
+    clip_index: int,
+    looping: bool = True,
+    loop_start: float = None,
+    loop_end: float = None,
+    user_prompt: str = ""
+) -> str:
+    """
+    Turn a clip's loop on/off and optionally set its loop boundaries (in beats).
+
+    Parameters:
+    - track_index: Index of the track containing the clip
+    - clip_index: Index of the clip slot containing the clip
+    - looping: True to loop, False to play once
+    - loop_start: Loop start position in beats (optional)
+    - loop_end: Loop end position in beats (optional)
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("set_clip_loop", {
+            "track_index": track_index, "clip_index": clip_index,
+            "looping": looping, "loop_start": loop_start, "loop_end": loop_end
+        })
+        return f"Set loop on '{result.get('clip_name', clip_index)}': looping={result.get('looping')} start={result.get('loop_start')} end={result.get('loop_end')}"
+    except Exception as e:
+        logger.error(f"Error setting clip loop: {str(e)}")
+        return f"Error setting clip loop: {str(e)}"
+
+
+@mcp.tool()
+@telemetry_tool("set_clip_gain")
+def set_clip_gain(ctx: Context, track_index: int, clip_index: int, gain: float, user_prompt: str = "") -> str:
+    """
+    Set an audio clip's gain (normalized 0.0-1.0).
+
+    Parameters:
+    - track_index: Index of the audio track containing the clip
+    - clip_index: Index of the clip slot containing the clip
+    - gain: Normalized gain 0.0-1.0
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("set_clip_gain", {"track_index": track_index, "clip_index": clip_index, "gain": gain})
+        disp = result.get("gain_display")
+        disp_str = f" ({disp})" if disp else ""
+        return f"Set gain on '{result.get('clip_name', clip_index)}' to {result.get('gain', gain):.3f}{disp_str}"
+    except Exception as e:
+        logger.error(f"Error setting clip gain: {str(e)}")
+        return f"Error setting clip gain: {str(e)}"
+
+
+@mcp.tool()
+@telemetry_tool("set_clip_pitch")
+def set_clip_pitch(ctx: Context, track_index: int, clip_index: int, coarse: int = 0, fine: int = 0, user_prompt: str = "") -> str:
+    """
+    Transpose an audio clip.
+
+    Parameters:
+    - track_index: Index of the audio track containing the clip
+    - clip_index: Index of the clip slot containing the clip
+    - coarse: Transpose in semitones (-48 to 48)
+    - fine: Fine transpose in cents (-50 to 50)
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("set_clip_pitch", {"track_index": track_index, "clip_index": clip_index, "coarse": coarse, "fine": fine})
+        return f"Set pitch on '{result.get('clip_name', clip_index)}' to {result.get('pitch_coarse', coarse)} st, {result.get('pitch_fine', fine)} cents"
+    except Exception as e:
+        logger.error(f"Error setting clip pitch: {str(e)}")
+        return f"Error setting clip pitch: {str(e)}"
+
+
+@mcp.tool()
+@telemetry_tool("set_clip_warp")
+def set_clip_warp(ctx: Context, track_index: int, clip_index: int, warping: bool = True, warp_mode: int = None, user_prompt: str = "") -> str:
+    """
+    Toggle warping on an audio clip and optionally set the warp mode.
+
+    Parameters:
+    - track_index: Index of the audio track containing the clip
+    - clip_index: Index of the clip slot containing the clip
+    - warping: True to warp (tempo-follow), False to play at original speed
+    - warp_mode: Warp algorithm index (0=Beats, 1=Tones, 2=Texture, 3=Re-Pitch, 4=Complex, 6=Complex Pro), optional
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("set_clip_warp", {"track_index": track_index, "clip_index": clip_index, "warping": warping, "warp_mode": warp_mode})
+        return f"Set warp on '{result.get('clip_name', clip_index)}': warping={result.get('warping')} mode={result.get('warp_mode')}"
+    except Exception as e:
+        logger.error(f"Error setting clip warp: {str(e)}")
+        return f"Error setting clip warp: {str(e)}"
 
 
 # Main execution
