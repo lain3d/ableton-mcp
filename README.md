@@ -333,21 +333,23 @@ arrangement clips and set their content window/loop. (Note: an arrangement
 clip's timeline *footprint* is fixed once placed — moving is done by
 duplicate-to-new-position + delete-original, since `start_time` is read-only.)
 
-### Roadmap — bypassing the harder limits
+### Bypassing the harder limits — the Max for Live bridge
 
-Longer-term ideas for the things the LOM blocks outright, roughly hardest-last:
+The ceiling above the LOM is a **Max for Live** device, which runs inside the
+audio/MIDI signal path and reaches what a Remote Script can't: real audio
+analysis, and MIDI/CC generation. A foundation for this ships in **`M4L/`** — an
+M4L device runs a Node-for-Max bridge on TCP 9878, and the server's `m4l_*` tools
+talk to it. See [`M4L/README.md`](M4L/README.md) for the architecture and
+install/test steps. (The bridge and protocol are tested standalone; the in-Live
+audio wiring needs manual verification.)
 
-- **MIDI CC lanes** — no LOM object exists, but a CC lane is just data in the
-  clip; a Max for Live device (which gets a richer API surface) loaded on the
-  track could bridge CC read/write that the Remote Script can't reach.
-- **Saving / export / render** — no LOM call, so this needs an out-of-band
-  route: UI automation (send Ctrl+S / trigger Export via the OS), or a Max for
-  Live / external tool. Inherently outside the socket protocol.
-- **Smooth automation curves** — `insert_step` only writes flats; recording
-  (above) is the practical workaround until/unless a curved-write path is found.
-- **Deeper engine access generally** — the ceiling above the LOM is a **Max for
-  Live** device (broader `live.*` API + direct DSP) or, further out, patching
-  the engine, which is out of scope for a Remote Script.
+Still out of reach even with M4L:
+
+- **Saving / export / render** — no LOM call and not a signal operation, so this
+  needs an out-of-band route (OS-level UI automation: Ctrl+S / Export). Inherently
+  outside the socket protocol.
+- **Smooth automation curves** — `insert_step` only writes flats; recording is
+  the practical workaround until/unless a curved-write path is found.
 
 ## Contributing
 

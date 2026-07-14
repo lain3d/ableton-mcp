@@ -15,6 +15,46 @@ from .telemetry_decorator import telemetry_tool, rich_telemetry_tool
 ABLETON_HOST = os.environ.get("ABLETON_HOST", "localhost")
 ABLETON_PORT = int(os.environ.get("ABLETON_PORT", "9877"))
 
+# The Max for Live bridge (Node for Max) listens on a separate port. Its
+# capabilities (audio analysis, MIDI/CC generation) are only available while an
+# AbletonMCP M4L device is loaded on a track; see M4L/README.md.
+M4L_HOST = os.environ.get("ABLETON_M4L_HOST", "127.0.0.1")
+M4L_PORT = int(os.environ.get("ABLETON_M4L_PORT", "9878"))
+
+
+def m4l_command(command_type: str, params: Dict[str, Any] = None, timeout: float = 5.0) -> Dict[str, Any]:
+    """One-shot request to the M4L Node bridge. Raises with a clear message when
+    the device isn't loaded (nothing is listening on the bridge port)."""
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.settimeout(timeout)
+    try:
+        try:
+            sock.connect((M4L_HOST, M4L_PORT))
+        except (ConnectionRefusedError, OSError):
+            raise Exception(
+                f"No AbletonMCP Max for Live device is running (nothing on "
+                f"{M4L_HOST}:{M4L_PORT}). Load the AbletonMCP analysis device on a track."
+            )
+        sock.sendall(json.dumps({"type": command_type, "params": params or {}}).encode("utf-8"))
+        buf = b""
+        while True:
+            chunk = sock.recv(8192)
+            if not chunk:
+                break
+            buf += chunk
+            try:
+                resp = json.loads(buf.decode("utf-8"))
+                break
+            except json.JSONDecodeError:
+                continue
+        else:
+            raise Exception("M4L bridge closed the connection without a full response")
+        if resp.get("status") == "error":
+            raise Exception(resp.get("message", "Unknown M4L bridge error"))
+        return resp.get("result", {})
+    finally:
+        sock.close()
+
 # Configure logging
 logging.basicConfig(level=logging.INFO, 
                     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -2706,6 +2746,91 @@ def batch(ctx: Context, operations: List[Dict[str, Any]], stop_on_error: bool = 
     except Exception as e:
         logger.error(f"Error running batch: {str(e)}")
         return f"Error running batch: {str(e)}"
+
+
+# ── Max for Live bridge (audio analysis + MIDI/CC generation) ───────────────────
+
+@mcp.tool()
+@telemetry_tool("m4l_status")
+def m4l_status(ctx: Context, user_prompt: str = "") -> str:
+    """
+    Check whether an AbletonMCP Max for Live device is loaded and reachable.
+
+    The M4L device unlocks capabilities the Live Object Model can't provide —
+    real audio analysis and MIDI/CC generation from inside the signal path. It
+    runs a Node-for-Max bridge on a separate port. If this reports not-connected,
+    load the AbletonMCP analysis device (M4L/AbletonMCP_Analysis.amxd) onto a track.
+
+    Parameters:
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        result = m4l_command("ping")
+        return f"M4L bridge connected: {json.dumps(result)}"
+    except Exception as e:
+        return f"M4L bridge not available: {str(e)}"
+
+
+@mcp.tool()
+@telemetry_tool("m4l_get_analysis")
+def m4l_get_analysis(ctx: Context, user_prompt: str = "") -> str:
+    """
+    Read the live audio analysis from the loaded AbletonMCP M4L device: peak and
+    RMS amplitude, detected pitch (Hz), and spectral centroid (Hz) of the audio
+    passing through the device's track. This is data the LOM cannot provide.
+
+    (The device reports what its patch is wired to analyze; peak is always
+    available, others depend on the device build.)
+
+    Parameters:
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        result = m4l_command("get_analysis")
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        logger.error(f"Error getting M4L analysis: {str(e)}")
+        return f"Error getting M4L analysis: {str(e)}"
+
+
+@mcp.tool()
+@telemetry_tool("m4l_send_midi")
+def m4l_send_midi(ctx: Context, pitch: int, velocity: int = 100, duration: float = 100.0, user_prompt: str = "") -> str:
+    """
+    Emit a MIDI note from the loaded AbletonMCP M4L device into its track.
+
+    Parameters:
+    - pitch: MIDI note number (0-127)
+    - velocity: Note velocity (0-127, default 100)
+    - duration: Note duration in milliseconds (default 100)
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        result = m4l_command("send_midi", {"pitch": pitch, "velocity": velocity, "duration": duration})
+        return f"Sent MIDI note {result.get('pitch')} vel {result.get('velocity')}"
+    except Exception as e:
+        logger.error(f"Error sending M4L MIDI: {str(e)}")
+        return f"Error sending M4L MIDI: {str(e)}"
+
+
+@mcp.tool()
+@telemetry_tool("m4l_send_cc")
+def m4l_send_cc(ctx: Context, controller: int, value: int, user_prompt: str = "") -> str:
+    """
+    Emit a MIDI CC message from the loaded AbletonMCP M4L device — the practical
+    route to MIDI CC, which clip envelopes can't reach.
+
+    Parameters:
+    - controller: CC number (0-127)
+    - value: CC value (0-127)
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        result = m4l_command("send_cc", {"controller": controller, "value": value})
+        return f"Sent CC {result.get('controller')} = {result.get('value')}"
+    except Exception as e:
+        logger.error(f"Error sending M4L CC: {str(e)}")
+        return f"Error sending M4L CC: {str(e)}"
 
 
 # Main execution
