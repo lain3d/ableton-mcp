@@ -189,8 +189,9 @@ newly possible, here's an honest picture of what you can ask for.
 - "Make a Metro Boomin style hip-hop beat with an 808 drum rack"
 - "Add a jazz chord progression to the clip in track 1, then humanize it"
   (per-note velocity, probability, and timing)
-- "Load Auto Filter on the drums and sweep the cutoff across the clip"
-  (clip automation for any device parameter, incl. devices nested in racks)
+- "Load Auto Filter on the drums and sweep the cutoff smoothly across the clip"
+  (clip automation for any device parameter, incl. nested racks; step / linear /
+  smooth curve shapes)
 - "Turn up the reverb send on the vocals and pan them slightly left"
   (full mixer control: volume / pan / sends / mute / solo)
 
@@ -265,9 +266,11 @@ Two recurring shapes explain most limits:
    groove) lives on the master track, which has **no clips** — so there's no clip
    envelope to attach it to.
 2. **Envelopes are written as steps.** `Envelope.insert_step` writes flat
-   segments, so our envelopes come out as staircases; the UI can draw
-   linear/curved breakpoints with tension, which the LOM's write API doesn't
-   offer.
+   segments — the LOM has no true breakpoint/curve write. We work around it by
+   densifying into a fine staircase (~32 sub-steps per beat), so `set_clip_envelope`
+   / `set_clip_mixer_envelope` accept `shape: "step" | "linear" | "smooth"` and
+   produce ramps and eased curves that read as smooth (verified: a `linear` 0→1
+   sweep samples 0, .125, .25 … 1.0; `smooth` gives a cosine S-curve).
 
 #### What "automation is only per-clip, per-track-parameter" blocks in practice
 
@@ -294,8 +297,10 @@ What it **can't** do directly, with the practical example of each:
   and can't cover a section where the track has no clip at all.
 - **Groove amount / crossfader / other song-level moves** (e.g. DJ-style
   crossfades between decks) — song-level, so blocked the same way.
-- **Smooth curves.** Even where automation *is* writable, "a gentle S-curve swell"
-  comes out as a staircase, because the only write call places flat steps.
+- **Smooth curves.** The write API only places flat steps, but `set_clip_envelope`
+  / `set_clip_mixer_envelope` densify into a fine staircase, so `shape: "linear"`
+  and `"smooth"` give ramps and eased curves that read as smooth (a workaround,
+  not true curve breakpoints).
 
 **The practical escape hatch — record it (implemented).** Anything that plays
 back can be *recorded* as automation: arm arrangement record, start playback,
@@ -312,9 +317,10 @@ Verified against the running LOM (Live 12.3):
 
 - **No saving the Live Set** — the API exposes no save function.
 - **No audio rendering / export / bounce**, and no freeze/flatten.
-- **No raw audio generation or analysis** — you supply audio files; the tool
-  places, warps, and mixes them, but can't synthesize or read sample data.
-- **Automation is stepped, not smooth** (see above).
+- **No raw audio generation or analysis via the LOM** — you supply audio files;
+  the Remote Script places, warps, and mixes them but can't synthesize or read
+  samples. (The Max for Live device *can* analyze audio, and can synthesize it —
+  see `M4L/`.)
 - **No MIDI CC envelopes in clips** — `create_automation_envelope` needs a
   *DeviceParameter*, and there is no MIDI-CC parameter object in the LOM to pass
   it. Confirmed: a MIDI clip exposes `automation_envelope` but nothing that maps
@@ -372,8 +378,8 @@ Still out of reach even with M4L:
 - **Saving / export / render** — no LOM call and not a signal operation, so this
   needs an out-of-band route (OS-level UI automation: Ctrl+S / Export). Inherently
   outside the socket protocol.
-- **Smooth automation curves** — `insert_step` only writes flats; recording is
-  the practical workaround until/unless a curved-write path is found.
+- **MIDI CC lanes in clips** — the LOM clip only exposes device-parameter
+  envelopes, no CC object; generating CC and recording it (M4L) is the route.
 
 ## Contributing
 

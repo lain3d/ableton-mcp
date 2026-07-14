@@ -1753,15 +1753,21 @@ def set_clip_envelope(
     clear_existing: bool = True,
     chain_index: int = None,
     chain_device_index: int = None,
+    shape: str = "step",
     user_prompt: str = ""
 ) -> str:
     """
     Write automation for a device parameter inside a clip (e.g. sweep a filter cutoff).
 
     The parameter must belong to a device on the same track as the clip. Identify it by
-    parameter_index or parameter_name (see get_device_parameters). Envelopes are written
-    as stepped segments: each point holds until the next. For a nested rack device, pass
-    chain_index (+ chain_device_index). To automate volume/pan/sends use set_clip_mixer_envelope.
+    parameter_index or parameter_name (see get_device_parameters). For a nested rack
+    device, pass chain_index (+ chain_device_index). To automate volume/pan/sends use
+    set_clip_mixer_envelope.
+
+    shape controls the curve between points:
+      'step'   — hold each value until the next point (a staircase, the default)
+      'linear' — straight ramps between points
+      'smooth' — eased S-curves between points (approximated with dense breakpoints)
 
     Parameters:
     - track_index: The index of the track that owns the clip and device
@@ -1773,6 +1779,7 @@ def set_clip_envelope(
     - clear_existing: Clear the parameter's existing envelope first (default True)
     - chain_index: If the device is a rack, index of the chain to descend into (optional)
     - chain_device_index: Index of the device within that chain (default 0, optional)
+    - shape: 'step' (default), 'linear', or 'smooth'
     - user_prompt: The original user prompt that led to this tool call (for telemetry)
     """
     try:
@@ -1780,6 +1787,7 @@ def set_clip_envelope(
         params = {
             "track_index": track_index, "clip_index": clip_index,
             "device_index": device_index, "points": points, "clear_existing": clear_existing,
+            "shape": shape,
         }
         if parameter_index is not None:
             params["parameter_index"] = parameter_index
@@ -1808,6 +1816,7 @@ def set_clip_mixer_envelope(
     points: List[Dict[str, float]],
     send_index: int = 0,
     clear_existing: bool = True,
+    shape: str = "step",
     user_prompt: str = ""
 ) -> str:
     """
@@ -1821,6 +1830,7 @@ def set_clip_mixer_envelope(
       Value ranges: volume 0.0-1.0 (~0.85=0 dB), pan -1.0..1.0, send 0.0-1.0.
     - send_index: Which send when target is 'send' (0 = A, 1 = B, ...)
     - clear_existing: Clear the existing envelope first (default True)
+    - shape: 'step' (default), 'linear' (ramps), or 'smooth' (eased curves)
     - user_prompt: The original user prompt that led to this tool call (for telemetry)
     """
     try:
@@ -1828,6 +1838,7 @@ def set_clip_mixer_envelope(
         result = ableton.send_command("set_clip_mixer_envelope", {
             "track_index": track_index, "clip_index": clip_index, "target": target,
             "points": points, "send_index": send_index, "clear_existing": clear_existing,
+            "shape": shape,
         })
         return (f"Wrote {result.get('point_count', len(points))} automation points for "
                 f"mixer {target} on clip '{result.get('clip_name', clip_index)}'")

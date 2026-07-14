@@ -426,12 +426,14 @@ class AbletonMCP(ControlSurface):
                                            params.get("parameter_index", None), params.get("parameter_name", None),
                                            params.get("clear_existing", True),
                                            params.get("chain_index", None),
-                                           params.get("chain_device_index", None))
+                                           params.get("chain_device_index", None),
+                                           params.get("shape", "step"))
         elif command_type == "set_clip_mixer_envelope":
             return self._set_clip_mixer_envelope(params.get("track_index", 0), params.get("clip_index", 0),
                                                  params.get("target", "volume"), params.get("points", []),
                                                  params.get("send_index", 0),
-                                                 params.get("clear_existing", True))
+                                                 params.get("clear_existing", True),
+                                                 params.get("shape", "step"))
         elif command_type == "clear_clip_envelope":
             return self._clear_clip_envelope(params.get("track_index", 0), params.get("clip_index", 0),
                                              params.get("device_index", 0), params.get("parameter_index", None),
@@ -1913,49 +1915,87 @@ class AbletonMCP(ControlSurface):
 
     # ── Clip automation envelopes ─────────────────────────────────────────────
 
-    def _write_envelope(self, clip, param, points, clear_existing):
-        """Write a staircase automation envelope for ``param`` inside ``clip``.
+    def _write_envelope(self, clip, param, points, clear_existing, shape="step"):
+        """Write an automation envelope for ``param`` inside ``clip``.
 
-        insert_step writes a flat segment [time, time+duration]; a zero-length
-        step spans the whole clip, so each point holds its value until the next
-        (a staircase). Callers can override a point's span with "duration".
+        shape:
+          "step"   — flat segment per point (a staircase); each holds its value
+                     until the next point. Callers can override a point's span
+                     with "duration".
+          "linear" — many tiny flat steps interpolated linearly between points,
+                     approximating a ramp (the LOM has no true breakpoint API,
+                     only flat insert_step, so a ramp is a fine staircase).
+          "smooth" — like linear but with cosine easing between points, for
+                     eased S-curves.
         """
-        # Clearing is a Clip method (the envelope object has no clear()).
         if clear_existing:
             try:
                 clip.clear_envelope(param)
             except Exception:
                 pass
-        # automation_envelope returns None when the clip has no envelope yet;
-        # create_automation_envelope makes one.
         env = clip.automation_envelope(param)
         if env is None and hasattr(clip, "create_automation_envelope"):
             env = clip.create_automation_envelope(param)
         if env is None:
             raise ValueError("Could not create automation envelope for '%s' "
                              "(parameter may not be automatable)" % param.name)
+
+        clamp = lambda x: max(param.min, min(param.max, float(x)))
         pts = sorted(points, key=lambda p: float(p["time"]))
         n = len(pts)
-        for i, pt in enumerate(pts):
-            t = float(pt["time"])
-            v = max(param.min, min(param.max, float(pt["value"])))
-            if "duration" in pt:
-                dur = float(pt["duration"])
-            elif i + 1 < n:
-                dur = float(pts[i + 1]["time"]) - t
-            else:
-                dur = (t - float(pts[i - 1]["time"])) if n > 1 else 1.0
-            env.insert_step(t, max(0.0, dur), v)
-        # Sample just inside each segment; value_at_time at an exact segment
-        # boundary returns the preceding segment's value.
+
+        if shape == "step":
+            for i, pt in enumerate(pts):
+                t = float(pt["time"])
+                v = clamp(pt["value"])
+                if "duration" in pt:
+                    dur = float(pt["duration"])
+                elif i + 1 < n:
+                    dur = float(pts[i + 1]["time"]) - t
+                else:
+                    dur = (t - float(pts[i - 1]["time"])) if n > 1 else 1.0
+                env.insert_step(t, max(0.0, dur), v)
+        elif shape in ("linear", "smooth"):
+            import math
+            # ~32 sub-steps per beat so the staircase reads as a smooth ramp;
+            # capped so huge spans don't explode the step count.
+            def ease(frac):
+                if shape == "smooth":
+                    return (1.0 - math.cos(frac * math.pi)) / 2.0
+                return frac
+            for i in range(n - 1):
+                t0, v0 = float(pts[i]["time"]), clamp(pts[i]["value"])
+                t1, v1 = float(pts[i + 1]["time"]), clamp(pts[i + 1]["value"])
+                seg = t1 - t0
+                if seg <= 0:
+                    continue
+                sub = max(2, min(512, int(seg * 32)))
+                dur = seg / sub
+                for k in range(sub):
+                    frac = k / float(sub)
+                    env.insert_step(t0 + seg * frac, dur, clamp(v0 + (v1 - v0) * ease(frac)))
+            # hold the final value as a small tail so the endpoint is covered
+            if n >= 1:
+                tl = float(pts[-1]["time"])
+                env.insert_step(tl, 0.01, clamp(pts[-1]["value"]))
+        else:
+            raise ValueError("shape must be 'step', 'linear', or 'smooth'")
+
+        # Dense sampling across the span so callers see the actual shape
+        # (stepped vs ramped), not just the values at the control points.
         sampled = []
-        for pt in pts:
-            try:
-                sampled.append({"time": pt["time"],
-                                "value": env.value_at_time(float(pt["time"]) + 0.001)})
-            except Exception:
-                pass
-        return {"point_count": len(points), "sampled": sampled}
+        if pts:
+            t0 = float(pts[0]["time"])
+            t1 = float(pts[-1]["time"])
+            span = max(1e-6, t1 - t0)
+            for k in range(9):
+                tt = t0 + span * k / 8.0
+                try:
+                    sampled.append({"time": round(tt, 3),
+                                    "value": round(env.value_at_time(tt + 0.0005), 4)})
+                except Exception:
+                    pass
+        return {"point_count": len(points), "shape": shape, "sampled": sampled}
 
     def _mixer_param(self, track, target, send_index):
         """Resolve a mixer DeviceParameter: 'volume', 'pan', or a send."""
@@ -1974,7 +2014,7 @@ class AbletonMCP(ControlSurface):
     def _set_clip_envelope(self, track_index, clip_index, device_index, points,
                            parameter_index=None, parameter_name=None,
                            clear_existing=True, chain_index=None,
-                           chain_device_index=None):
+                           chain_device_index=None, shape="step"):
         """Write automation points for a track device's parameter inside a clip.
 
         points: list of {"time": beats, "value": param value, "duration": beats}.
@@ -1984,7 +2024,7 @@ class AbletonMCP(ControlSurface):
             track = self._song.tracks[track_index]
             device = self._resolve_device(track, device_index, chain_index, chain_device_index)
             param = self._resolve_param_on_device(device, parameter_index, parameter_name)
-            info = self._write_envelope(clip, param, points, clear_existing)
+            info = self._write_envelope(clip, param, points, clear_existing, shape)
             info.update({"clip_name": clip.name, "device_name": device.name,
                          "parameter_name": param.name})
             return info
@@ -1993,13 +2033,13 @@ class AbletonMCP(ControlSurface):
             raise
 
     def _set_clip_mixer_envelope(self, track_index, clip_index, target, points,
-                                 send_index=0, clear_existing=True):
+                                 send_index=0, clear_existing=True, shape="step"):
         """Automate a track's mixer parameter (volume/pan/send) inside a clip."""
         try:
             clip = self._get_clip(track_index, clip_index)
             track = self._song.tracks[track_index]
             param = self._mixer_param(track, target, send_index)
-            info = self._write_envelope(clip, param, points, clear_existing)
+            info = self._write_envelope(clip, param, points, clear_existing, shape)
             info.update({"clip_name": clip.name, "target": target,
                          "parameter_name": param.name})
             return info
