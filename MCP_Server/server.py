@@ -123,6 +123,12 @@ class AbletonConnection:
             # Clip content: notes, quantize, loop & audio warp
             "remove_clip_notes", "quantize_clip", "set_clip_loop",
             "set_clip_gain", "set_clip_pitch", "set_clip_warp",
+            # Scenes, clip management, routing, automation, transport
+            "create_scene", "delete_scene", "duplicate_scene", "fire_scene", "set_scene_name",
+            "delete_clip", "duplicate_clip",
+            "set_track_input_routing", "set_track_output_routing",
+            "set_clip_envelope", "clear_clip_envelope",
+            "undo", "redo", "capture_midi",
             # Arrangement view commands
             "switch_to_arrangement_view", "set_current_song_time",
             "duplicate_session_clip_to_arrangement"
@@ -1305,6 +1311,355 @@ def set_clip_warp(ctx: Context, track_index: int, clip_index: int, warping: bool
     except Exception as e:
         logger.error(f"Error setting clip warp: {str(e)}")
         return f"Error setting clip warp: {str(e)}"
+
+
+# ── Scenes ─────────────────────────────────────────────────────────────────────
+
+@mcp.tool()
+@telemetry_tool("create_scene")
+def create_scene(ctx: Context, index: int = -1, user_prompt: str = "") -> str:
+    """
+    Create a new scene. index=-1 appends at the end.
+
+    Parameters:
+    - index: The index to insert the scene at (-1 = end)
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("create_scene", {"index": index})
+        return f"Created scene '{result.get('name', '?')}' at index {result.get('index', '?')}"
+    except Exception as e:
+        logger.error(f"Error creating scene: {str(e)}")
+        return f"Error creating scene: {str(e)}"
+
+
+@mcp.tool()
+@telemetry_tool("delete_scene")
+def delete_scene(ctx: Context, scene_index: int, user_prompt: str = "") -> str:
+    """
+    Delete a scene.
+
+    Parameters:
+    - scene_index: The index of the scene to delete
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("delete_scene", {"scene_index": scene_index})
+        return f"Deleted scene {scene_index} ({result.get('scene_count', '?')} scenes remain)"
+    except Exception as e:
+        logger.error(f"Error deleting scene: {str(e)}")
+        return f"Error deleting scene: {str(e)}"
+
+
+@mcp.tool()
+@telemetry_tool("duplicate_scene")
+def duplicate_scene(ctx: Context, scene_index: int, user_prompt: str = "") -> str:
+    """
+    Duplicate a scene (the copy is inserted right after it).
+
+    Parameters:
+    - scene_index: The index of the scene to duplicate
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("duplicate_scene", {"scene_index": scene_index})
+        return f"Duplicated scene to index {result.get('index', '?')}"
+    except Exception as e:
+        logger.error(f"Error duplicating scene: {str(e)}")
+        return f"Error duplicating scene: {str(e)}"
+
+
+@mcp.tool()
+@telemetry_tool("fire_scene")
+def fire_scene(ctx: Context, scene_index: int, user_prompt: str = "") -> str:
+    """
+    Launch a scene (fires every clip in that scene row).
+
+    Parameters:
+    - scene_index: The index of the scene to fire
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        ableton = get_ableton_connection()
+        ableton.send_command("fire_scene", {"scene_index": scene_index})
+        return f"Fired scene {scene_index}"
+    except Exception as e:
+        logger.error(f"Error firing scene: {str(e)}")
+        return f"Error firing scene: {str(e)}"
+
+
+@mcp.tool()
+@telemetry_tool("set_scene_name")
+def set_scene_name(ctx: Context, scene_index: int, name: str, user_prompt: str = "") -> str:
+    """
+    Rename a scene.
+
+    Parameters:
+    - scene_index: The index of the scene to rename
+    - name: The new scene name
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("set_scene_name", {"scene_index": scene_index, "name": name})
+        return f"Renamed scene {scene_index} to '{result.get('name', name)}'"
+    except Exception as e:
+        logger.error(f"Error setting scene name: {str(e)}")
+        return f"Error setting scene name: {str(e)}"
+
+
+# ── Clip management ────────────────────────────────────────────────────────────
+
+@mcp.tool()
+@telemetry_tool("delete_clip")
+def delete_clip(ctx: Context, track_index: int, clip_index: int, user_prompt: str = "") -> str:
+    """
+    Delete a clip from a Session slot.
+
+    Parameters:
+    - track_index: The index of the track containing the clip
+    - clip_index: The index of the clip slot to clear
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("delete_clip", {"track_index": track_index, "clip_index": clip_index})
+        return f"Deleted clip '{result.get('deleted_name', clip_index)}' from track {track_index}, slot {clip_index}"
+    except Exception as e:
+        logger.error(f"Error deleting clip: {str(e)}")
+        return f"Error deleting clip: {str(e)}"
+
+
+@mcp.tool()
+@telemetry_tool("duplicate_clip")
+def duplicate_clip(ctx: Context, track_index: int, clip_index: int, target_clip_index: int = None, user_prompt: str = "") -> str:
+    """
+    Duplicate a Session clip to another slot on the same track.
+
+    Parameters:
+    - track_index: The index of the track containing the clip
+    - clip_index: The index of the source clip slot
+    - target_clip_index: The destination slot (optional; defaults to the next empty slot)
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        ableton = get_ableton_connection()
+        params = {"track_index": track_index, "clip_index": clip_index}
+        if target_clip_index is not None:
+            params["target_clip_index"] = target_clip_index
+        result = ableton.send_command("duplicate_clip", params)
+        return f"Duplicated clip from slot {clip_index} to slot {result.get('target_index', '?')} on track {track_index}"
+    except Exception as e:
+        logger.error(f"Error duplicating clip: {str(e)}")
+        return f"Error duplicating clip: {str(e)}"
+
+
+# ── Track routing ──────────────────────────────────────────────────────────────
+
+@mcp.tool()
+@telemetry_tool("get_track_routing")
+def get_track_routing(ctx: Context, track_index: int, user_prompt: str = "") -> str:
+    """
+    Get a track's current input/output routing and the available options.
+
+    Use this to discover valid routing names (e.g. to resample or route one track
+    into another) before calling set_track_input_routing / set_track_output_routing.
+
+    Parameters:
+    - track_index: The index of the track
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("get_track_routing", {"track_index": track_index})
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        logger.error(f"Error getting track routing: {str(e)}")
+        return f"Error getting track routing: {str(e)}"
+
+
+@mcp.tool()
+@telemetry_tool("set_track_input_routing")
+def set_track_input_routing(ctx: Context, track_index: int, routing_name: str = None, channel: str = None, user_prompt: str = "") -> str:
+    """
+    Set a track's input routing (source). Names must match get_track_routing output.
+
+    Parameters:
+    - track_index: The index of the track
+    - routing_name: Display name of the input routing type (optional)
+    - channel: Display name of the input routing channel (optional)
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("set_track_input_routing", {"track_index": track_index, "routing_name": routing_name, "channel": channel})
+        return f"Set input routing of '{result.get('track_name', track_index)}' to {result.get('input_routing_type')} / {result.get('input_routing_channel')}"
+    except Exception as e:
+        logger.error(f"Error setting input routing: {str(e)}")
+        return f"Error setting input routing: {str(e)}"
+
+
+@mcp.tool()
+@telemetry_tool("set_track_output_routing")
+def set_track_output_routing(ctx: Context, track_index: int, routing_name: str = None, channel: str = None, user_prompt: str = "") -> str:
+    """
+    Set a track's output routing (destination). Names must match get_track_routing output.
+
+    Parameters:
+    - track_index: The index of the track
+    - routing_name: Display name of the output routing type (optional)
+    - channel: Display name of the output routing channel (optional)
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("set_track_output_routing", {"track_index": track_index, "routing_name": routing_name, "channel": channel})
+        return f"Set output routing of '{result.get('track_name', track_index)}' to {result.get('output_routing_type')} / {result.get('output_routing_channel')}"
+    except Exception as e:
+        logger.error(f"Error setting output routing: {str(e)}")
+        return f"Error setting output routing: {str(e)}"
+
+
+# ── Clip automation envelopes ──────────────────────────────────────────────────
+
+@mcp.tool()
+@rich_telemetry_tool("set_clip_envelope")
+def set_clip_envelope(
+    ctx: Context,
+    track_index: int,
+    clip_index: int,
+    device_index: int,
+    points: List[Dict[str, float]],
+    parameter_index: int = None,
+    parameter_name: str = None,
+    clear_existing: bool = True,
+    user_prompt: str = ""
+) -> str:
+    """
+    Write automation for a device parameter inside a clip (e.g. sweep a filter cutoff).
+
+    The parameter must belong to a device on the same track as the clip. Identify it by
+    parameter_index or parameter_name (see get_device_parameters).
+
+    Parameters:
+    - track_index: The index of the track that owns the clip and device
+    - clip_index: The index of the clip slot
+    - device_index: The index of the device in the track's device chain
+    - points: List of {"time": beats, "value": param value, "duration": beats (optional)}
+    - parameter_index: Index of the parameter to automate (optional if parameter_name given)
+    - parameter_name: Name of the parameter to automate (optional if parameter_index given)
+    - clear_existing: Clear the parameter's existing envelope first (default True)
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        ableton = get_ableton_connection()
+        params = {
+            "track_index": track_index, "clip_index": clip_index,
+            "device_index": device_index, "points": points, "clear_existing": clear_existing,
+        }
+        if parameter_index is not None:
+            params["parameter_index"] = parameter_index
+        if parameter_name is not None:
+            params["parameter_name"] = parameter_name
+        result = ableton.send_command("set_clip_envelope", params)
+        return (f"Wrote {result.get('point_count', len(points))} automation points for "
+                f"'{result.get('parameter_name', '?')}' on '{result.get('device_name', '?')}' "
+                f"in clip '{result.get('clip_name', clip_index)}'")
+    except Exception as e:
+        logger.error(f"Error setting clip envelope: {str(e)}")
+        return f"Error setting clip envelope: {str(e)}"
+
+
+@mcp.tool()
+@telemetry_tool("clear_clip_envelope")
+def clear_clip_envelope(
+    ctx: Context,
+    track_index: int,
+    clip_index: int,
+    device_index: int,
+    parameter_index: int = None,
+    parameter_name: str = None,
+    user_prompt: str = ""
+) -> str:
+    """
+    Clear a device parameter's automation envelope inside a clip.
+
+    Parameters:
+    - track_index: The index of the track that owns the clip and device
+    - clip_index: The index of the clip slot
+    - device_index: The index of the device in the track's device chain
+    - parameter_index: Index of the parameter (optional if parameter_name given)
+    - parameter_name: Name of the parameter (optional if parameter_index given)
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        ableton = get_ableton_connection()
+        params = {"track_index": track_index, "clip_index": clip_index, "device_index": device_index}
+        if parameter_index is not None:
+            params["parameter_index"] = parameter_index
+        if parameter_name is not None:
+            params["parameter_name"] = parameter_name
+        result = ableton.send_command("clear_clip_envelope", params)
+        return f"Cleared envelope for '{result.get('parameter_name', '?')}' in clip '{result.get('clip_name', clip_index)}'"
+    except Exception as e:
+        logger.error(f"Error clearing clip envelope: {str(e)}")
+        return f"Error clearing clip envelope: {str(e)}"
+
+
+# ── Transport / edit history ───────────────────────────────────────────────────
+
+@mcp.tool()
+@telemetry_tool("undo")
+def undo(ctx: Context, user_prompt: str = "") -> str:
+    """Undo the last action in Live.
+
+    Parameters:
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("undo", {})
+        return f"Undo done (can_undo={result.get('can_undo')}, can_redo={result.get('can_redo')})"
+    except Exception as e:
+        logger.error(f"Error during undo: {str(e)}")
+        return f"Error during undo: {str(e)}"
+
+
+@mcp.tool()
+@telemetry_tool("redo")
+def redo(ctx: Context, user_prompt: str = "") -> str:
+    """Redo the last undone action in Live.
+
+    Parameters:
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("redo", {})
+        return f"Redo done (can_undo={result.get('can_undo')}, can_redo={result.get('can_redo')})"
+    except Exception as e:
+        logger.error(f"Error during redo: {str(e)}")
+        return f"Error during redo: {str(e)}"
+
+
+@mcp.tool()
+@telemetry_tool("capture_midi")
+def capture_midi(ctx: Context, user_prompt: str = "") -> str:
+    """Capture recently played MIDI into a clip (Live's Capture MIDI feature).
+
+    Parameters:
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        ableton = get_ableton_connection()
+        ableton.send_command("capture_midi", {})
+        return "Captured MIDI"
+    except Exception as e:
+        logger.error(f"Error capturing MIDI: {str(e)}")
+        return f"Error capturing MIDI: {str(e)}"
 
 
 # Main execution

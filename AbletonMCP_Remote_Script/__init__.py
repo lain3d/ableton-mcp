@@ -240,6 +240,13 @@ class AbletonMCP(ControlSurface):
                                  # Clip content: notes, quantize, loop & audio warp
                                  "remove_clip_notes", "quantize_clip", "set_clip_loop",
                                  "set_clip_gain", "set_clip_pitch", "set_clip_warp",
+                                 # Scenes, clip management, routing, automation, transport
+                                 "create_scene", "delete_scene", "duplicate_scene",
+                                 "fire_scene", "set_scene_name",
+                                 "delete_clip", "duplicate_clip",
+                                 "set_track_input_routing", "set_track_output_routing",
+                                 "set_clip_envelope", "clear_clip_envelope",
+                                 "undo", "redo", "capture_midi",
                                  # Arrangement view – must run on the main thread
                                  "switch_to_arrangement_view", "set_current_song_time",
                                  "duplicate_session_clip_to_arrangement"]:
@@ -379,6 +386,58 @@ class AbletonMCP(ControlSurface):
                                 params.get("clip_index", 0),
                                 params.get("warping", True),
                                 params.get("warp_mode", None))
+                        # ── Scenes, clip management, routing, automation, transport ─
+                        elif command_type == "create_scene":
+                            result = self._create_scene(params.get("index", -1))
+                        elif command_type == "delete_scene":
+                            result = self._delete_scene(params.get("scene_index", 0))
+                        elif command_type == "duplicate_scene":
+                            result = self._duplicate_scene(params.get("scene_index", 0))
+                        elif command_type == "fire_scene":
+                            result = self._fire_scene(params.get("scene_index", 0))
+                        elif command_type == "set_scene_name":
+                            result = self._set_scene_name(
+                                params.get("scene_index", 0), params.get("name", ""))
+                        elif command_type == "delete_clip":
+                            result = self._delete_clip(
+                                params.get("track_index", 0), params.get("clip_index", 0))
+                        elif command_type == "duplicate_clip":
+                            result = self._duplicate_clip(
+                                params.get("track_index", 0),
+                                params.get("clip_index", 0),
+                                params.get("target_clip_index", None))
+                        elif command_type == "set_track_input_routing":
+                            result = self._set_track_input_routing(
+                                params.get("track_index", 0),
+                                params.get("routing_name", None),
+                                params.get("channel", None))
+                        elif command_type == "set_track_output_routing":
+                            result = self._set_track_output_routing(
+                                params.get("track_index", 0),
+                                params.get("routing_name", None),
+                                params.get("channel", None))
+                        elif command_type == "set_clip_envelope":
+                            result = self._set_clip_envelope(
+                                params.get("track_index", 0),
+                                params.get("clip_index", 0),
+                                params.get("device_index", 0),
+                                params.get("points", []),
+                                params.get("parameter_index", None),
+                                params.get("parameter_name", None),
+                                params.get("clear_existing", True))
+                        elif command_type == "clear_clip_envelope":
+                            result = self._clear_clip_envelope(
+                                params.get("track_index", 0),
+                                params.get("clip_index", 0),
+                                params.get("device_index", 0),
+                                params.get("parameter_index", None),
+                                params.get("parameter_name", None))
+                        elif command_type == "undo":
+                            result = self._undo()
+                        elif command_type == "redo":
+                            result = self._redo()
+                        elif command_type == "capture_midi":
+                            result = self._capture_midi()
                         # ── Arrangement view commands ──────────────────────────────
                         elif command_type == "switch_to_arrangement_view":
                             result = self._switch_to_arrangement_view()
@@ -456,6 +515,10 @@ class AbletonMCP(ControlSurface):
                 track_index = params.get("track_index", 0)
                 clip_index = params.get("clip_index", 0)
                 response["result"] = self._get_clip_notes(track_index, clip_index)
+            # Read-only routing introspection
+            elif command_type == "get_track_routing":
+                track_index = params.get("track_index", 0)
+                response["result"] = self._get_track_routing(track_index)
             else:
                 response["status"] = "error"
                 response["message"] = "Unknown command: " + command_type
@@ -1311,6 +1374,296 @@ class AbletonMCP(ControlSurface):
                     "warp_mode": clip.warp_mode}
         except Exception as e:
             self.log_message("Error setting clip warp: " + str(e))
+            raise
+
+    # ── Scenes ────────────────────────────────────────────────────────────────
+
+    def _create_scene(self, index):
+        """Create a new scene at the given index (-1 = end)."""
+        try:
+            self._song.create_scene(index)
+            new_index = len(self._song.scenes) - 1 if index == -1 else index
+            scene = self._song.scenes[new_index]
+            return {"index": new_index, "name": scene.name}
+        except Exception as e:
+            self.log_message("Error creating scene: " + str(e))
+            raise
+
+    def _delete_scene(self, scene_index):
+        try:
+            if scene_index < 0 or scene_index >= len(self._song.scenes):
+                raise IndexError("Scene index out of range")
+            self._song.delete_scene(scene_index)
+            return {"deleted_index": scene_index, "scene_count": len(self._song.scenes)}
+        except Exception as e:
+            self.log_message("Error deleting scene: " + str(e))
+            raise
+
+    def _duplicate_scene(self, scene_index):
+        try:
+            if scene_index < 0 or scene_index >= len(self._song.scenes):
+                raise IndexError("Scene index out of range")
+            self._song.duplicate_scene(scene_index)
+            new_index = scene_index + 1
+            return {"index": new_index, "name": self._song.scenes[new_index].name}
+        except Exception as e:
+            self.log_message("Error duplicating scene: " + str(e))
+            raise
+
+    def _fire_scene(self, scene_index):
+        try:
+            if scene_index < 0 or scene_index >= len(self._song.scenes):
+                raise IndexError("Scene index out of range")
+            self._song.scenes[scene_index].fire()
+            return {"fired_index": scene_index}
+        except Exception as e:
+            self.log_message("Error firing scene: " + str(e))
+            raise
+
+    def _set_scene_name(self, scene_index, name):
+        try:
+            if scene_index < 0 or scene_index >= len(self._song.scenes):
+                raise IndexError("Scene index out of range")
+            self._song.scenes[scene_index].name = name
+            return {"index": scene_index, "name": self._song.scenes[scene_index].name}
+        except Exception as e:
+            self.log_message("Error setting scene name: " + str(e))
+            raise
+
+    # ── Clip management ───────────────────────────────────────────────────────
+
+    def _delete_clip(self, track_index, clip_index):
+        try:
+            if track_index < 0 or track_index >= len(self._song.tracks):
+                raise IndexError("Track index out of range")
+            track = self._song.tracks[track_index]
+            if clip_index < 0 or clip_index >= len(track.clip_slots):
+                raise IndexError("Clip index out of range")
+            slot = track.clip_slots[clip_index]
+            if not slot.has_clip:
+                raise Exception("No clip in slot")
+            name = slot.clip.name
+            slot.delete_clip()
+            return {"deleted_name": name, "track_index": track_index,
+                    "clip_index": clip_index}
+        except Exception as e:
+            self.log_message("Error deleting clip: " + str(e))
+            raise
+
+    def _duplicate_clip(self, track_index, clip_index, target_clip_index):
+        """Duplicate a Session clip to another slot on the same track.
+
+        target_clip_index=None picks the next empty slot after the source.
+        """
+        try:
+            if track_index < 0 or track_index >= len(self._song.tracks):
+                raise IndexError("Track index out of range")
+            track = self._song.tracks[track_index]
+            if clip_index < 0 or clip_index >= len(track.clip_slots):
+                raise IndexError("Clip index out of range")
+            src = track.clip_slots[clip_index]
+            if not src.has_clip:
+                raise Exception("No clip in source slot")
+            if target_clip_index is None:
+                for i in range(clip_index + 1, len(track.clip_slots)):
+                    if not track.clip_slots[i].has_clip:
+                        target_clip_index = i
+                        break
+                if target_clip_index is None:
+                    raise Exception("No empty slot available after the source clip")
+            if target_clip_index < 0 or target_clip_index >= len(track.clip_slots):
+                raise IndexError("Target clip index out of range")
+            dst = track.clip_slots[target_clip_index]
+            src.duplicate_clip_to(dst)
+            return {"source_index": clip_index, "target_index": target_clip_index,
+                    "name": dst.clip.name if dst.has_clip else None}
+        except Exception as e:
+            self.log_message("Error duplicating clip: " + str(e))
+            raise
+
+    # ── Track routing ─────────────────────────────────────────────────────────
+
+    def _routing_names(self, options):
+        return [getattr(o, "display_name", str(o)) for o in options]
+
+    def _get_track_routing(self, track_index):
+        try:
+            track = self._get_track_by_index(track_index, "regular")
+            info = {"track_name": track.name}
+            for attr in ("input_routing_type", "output_routing_type",
+                         "input_routing_channel", "output_routing_channel"):
+                cur = getattr(track, attr, None)
+                info[attr] = getattr(cur, "display_name", None) if cur is not None else None
+            for attr in ("available_input_routing_types", "available_output_routing_types",
+                         "available_input_routing_channels", "available_output_routing_channels"):
+                info[attr] = self._routing_names(getattr(track, attr, []))
+            return info
+        except Exception as e:
+            self.log_message("Error getting track routing: " + str(e))
+            raise
+
+    def _apply_routing(self, track, kind, name):
+        options = getattr(track, "available_" + kind + "s", [])
+        for opt in options:
+            if getattr(opt, "display_name", None) == name:
+                setattr(track, kind, opt)
+                return
+        raise ValueError("Routing '%s' not found for %s. Available: %s"
+                         % (name, kind, self._routing_names(options)))
+
+    def _set_track_input_routing(self, track_index, routing_name, channel):
+        try:
+            track = self._get_track_by_index(track_index, "regular")
+            if routing_name is not None:
+                self._apply_routing(track, "input_routing_type", routing_name)
+            if channel is not None:
+                self._apply_routing(track, "input_routing_channel", channel)
+            cur = track.input_routing_type
+            ch = track.input_routing_channel
+            return {"track_name": track.name,
+                    "input_routing_type": getattr(cur, "display_name", None),
+                    "input_routing_channel": getattr(ch, "display_name", None)}
+        except Exception as e:
+            self.log_message("Error setting input routing: " + str(e))
+            raise
+
+    def _set_track_output_routing(self, track_index, routing_name, channel):
+        try:
+            track = self._get_track_by_index(track_index, "regular")
+            if routing_name is not None:
+                self._apply_routing(track, "output_routing_type", routing_name)
+            if channel is not None:
+                self._apply_routing(track, "output_routing_channel", channel)
+            cur = track.output_routing_type
+            ch = track.output_routing_channel
+            return {"track_name": track.name,
+                    "output_routing_type": getattr(cur, "display_name", None),
+                    "output_routing_channel": getattr(ch, "display_name", None)}
+        except Exception as e:
+            self.log_message("Error setting output routing: " + str(e))
+            raise
+
+    # ── Clip automation envelopes ─────────────────────────────────────────────
+
+    def _resolve_parameter(self, track, device_index, parameter_index, parameter_name):
+        if device_index < 0 or device_index >= len(track.devices):
+            raise IndexError("Device index out of range")
+        device = track.devices[device_index]
+        if parameter_name is not None:
+            lname = str(parameter_name).lower()
+            for p in device.parameters:
+                if p.name.lower() == lname:
+                    return device, p
+            raise ValueError("Parameter '%s' not found on device '%s'"
+                             % (parameter_name, device.name))
+        if parameter_index is None:
+            raise ValueError("Provide parameter_index or parameter_name")
+        if parameter_index < 0 or parameter_index >= len(device.parameters):
+            raise IndexError("Parameter index out of range")
+        return device, device.parameters[parameter_index]
+
+    def _set_clip_envelope(self, track_index, clip_index, device_index, points,
+                           parameter_index=None, parameter_name=None,
+                           clear_existing=True):
+        """Write automation points for a track device's parameter inside a clip.
+
+        points: list of {"time": beats, "value": param value, "duration": beats}.
+        """
+        try:
+            clip = self._get_clip(track_index, clip_index)
+            track = self._song.tracks[track_index]
+            device, param = self._resolve_parameter(
+                track, device_index, parameter_index, parameter_name)
+            # Clearing is a Clip method (the envelope object has no clear()).
+            if clear_existing:
+                try:
+                    clip.clear_envelope(param)
+                except Exception:
+                    pass
+            # automation_envelope returns None when the clip has no envelope for
+            # this parameter yet; create_automation_envelope makes one.
+            env = clip.automation_envelope(param)
+            if env is None and hasattr(clip, "create_automation_envelope"):
+                env = clip.create_automation_envelope(param)
+            if env is None:
+                raise ValueError("Could not create automation envelope for '%s' "
+                                 "(parameter may not be automatable)" % param.name)
+            # insert_step writes a flat segment [time, time+duration]. A zero-length
+            # step spans the whole clip, so each point holds its value until the
+            # next one (a staircase). Callers can override with an explicit duration.
+            pts = sorted(points, key=lambda p: float(p["time"]))
+            n = len(pts)
+            for i, pt in enumerate(pts):
+                t = float(pt["time"])
+                v = max(param.min, min(param.max, float(pt["value"])))
+                if "duration" in pt:
+                    dur = float(pt["duration"])
+                elif i + 1 < n:
+                    dur = float(pts[i + 1]["time"]) - t
+                else:
+                    dur = (t - float(pts[i - 1]["time"])) if n > 1 else 1.0
+                env.insert_step(t, max(0.0, dur), v)
+            # Sample just inside each segment; value_at_time at an exact segment
+            # boundary returns the preceding segment's value.
+            sampled = []
+            for pt in pts:
+                try:
+                    sampled.append({"time": pt["time"],
+                                    "value": env.value_at_time(float(pt["time"]) + 0.001)})
+                except Exception:
+                    pass
+            return {"clip_name": clip.name, "device_name": device.name,
+                    "parameter_name": param.name, "point_count": len(points),
+                    "sampled": sampled}
+        except Exception as e:
+            self.log_message("Error setting clip envelope: " + str(e))
+            raise
+
+    def _clear_clip_envelope(self, track_index, clip_index, device_index,
+                             parameter_index=None, parameter_name=None):
+        try:
+            clip = self._get_clip(track_index, clip_index)
+            track = self._song.tracks[track_index]
+            device, param = self._resolve_parameter(
+                track, device_index, parameter_index, parameter_name)
+            cleared = False
+            try:
+                clip.clear_envelope(param)
+                cleared = True
+            except Exception:
+                pass
+            return {"clip_name": clip.name, "parameter_name": param.name,
+                    "cleared": cleared}
+        except Exception as e:
+            self.log_message("Error clearing clip envelope: " + str(e))
+            raise
+
+    # ── Transport / edit history ──────────────────────────────────────────────
+
+    def _undo(self):
+        try:
+            if self._song.can_undo:
+                self._song.undo()
+            return {"can_undo": self._song.can_undo, "can_redo": self._song.can_redo}
+        except Exception as e:
+            self.log_message("Error during undo: " + str(e))
+            raise
+
+    def _redo(self):
+        try:
+            if self._song.can_redo:
+                self._song.redo()
+            return {"can_undo": self._song.can_undo, "can_redo": self._song.can_redo}
+        except Exception as e:
+            self.log_message("Error during redo: " + str(e))
+            raise
+
+    def _capture_midi(self):
+        try:
+            self._song.capture_midi()
+            return {"captured": True}
+        except Exception as e:
+            self.log_message("Error capturing MIDI: " + str(e))
             raise
 
     # ── Browser implementations ───────────────────────────────────────────────
