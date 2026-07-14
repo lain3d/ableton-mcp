@@ -34,34 +34,44 @@ Node via `max-api` messages; MIDI/CC instructions flow Node → Max via outlets.
 
 Rebuild the device with: `python build_amxd.py`
 
-## What's tested vs. pending
+## What's tested
 
-**Tested (standalone, no Max needed):**
-- `.amxd` generation produces a structurally valid device (header + patcher JSON).
-- The bridge protocol end-to-end: `ping`, `get_analysis`, `send_midi`, `send_cc`,
-  error handling — driven from the MCP server's `m4l_*` tools against the bridge.
-- Node→Max direction (MIDI/CC outlets fire with the right values).
+**Verified in Live (device loaded on an audio track):**
+- The device loads and the Node bridge auto-starts (`@autostart 1` + a
+  `loadbang → "script start"`), running Node for Max's Node v20 inside Live and
+  listening on 9878.
+- **Audio analysis works**: `peak` reads 0 with no audio and tracks the signal
+  while a clip plays (measured ~0.35–0.54). This is the `peakamp~ → node.script`
+  path — data the LOM cannot provide.
+- `m4l_status` / `m4l_get_analysis` from the MCP server return live values.
 
-**Pending in-Live verification (can't be socket-tested from outside Live):**
-- The hand-authored Max patch wiring (`peakamp~` → `node.script`, and the
-  MIDI-out routing). Load the device and confirm analysis values update and
-  notes/CC actually reach the track.
+**Verified standalone, wiring pending in this device:**
+- The bridge's `send_midi` / `send_cc` protocol works, but this *audio-analysis*
+  device doesn't wire the Node MIDI outlet to a `noteout`/`ctlout` — MIDI/CC
+  generation belongs in a dedicated **MIDI Effect** device (roadmap). Calling
+  them here reports success but emits nothing into Live.
 
-## Install & test in Live
+## Install (how it's loaded)
 
-1. Put `AbletonMCP_Analysis.amxd` **and** `mcp_bridge.js` in the same folder, and
-   add that folder to Max's search path: in Live, open the device's Max editor
-   (the device's edit button) → Options → File Preferences → add the folder; or
-   drop both into your Ableton User Library's `Max Audio Effect` area.
-2. Drag `AbletonMCP_Analysis.amxd` onto an **audio track** (one with sound
-   playing through it).
-3. The Node bridge starts automatically. Confirm from the MCP side:
-   - `m4l_status` → should report connected with capabilities.
-   - `m4l_get_analysis` → `peak` should rise/fall with the audio.
-   - `m4l_send_midi` / `m4l_send_cc` → the device emits MIDI/CC.
+The device is staged in the Ableton **User Library** so it shows up in Live's
+browser and can be loaded programmatically (or by drag-and-drop):
 
-If `m4l_status` says "not available", the device isn't loaded (or Node for Max
-is still starting — give it a few seconds on first load).
+```
+User Library/Presets/Audio Effects/AbletonMCP/
+    AbletonMCP_Analysis.amxd
+    mcp_bridge.js            # must sit next to the .amxd so node.script finds it
+```
+
+`node.script` resolves `mcp_bridge.js` relative to the device, so no Max
+search-path change is needed. After rebuilding (`python build_amxd.py`), copy
+both files back into that User Library folder. Then load it onto an **audio
+track** (MCP: `load_browser_item` with the User Library URI, or drag it on).
+
+## Debugging
+
+The bridge logs startup and errors to `abletonmcp_m4l.log` in the OS temp dir
+(`%LOCALAPPDATA%\Temp` on Windows), so you can see what happened inside Live
+even though the Max console isn't reachable over the socket.
 
 ## Roadmap (M4L chapter)
 

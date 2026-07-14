@@ -19,12 +19,27 @@
 
 'use strict';
 const net = require('net');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+
+// Log to a file as well as the Max console, so the bridge can be debugged from
+// outside Live (the Max console isn't reachable over the socket).
+const LOG_PATH = path.join(os.tmpdir(), 'abletonmcp_m4l.log');
+function log(msg) {
+  const line = new Date().toISOString() + ' ' + msg + '\n';
+  try { fs.appendFileSync(LOG_PATH, line); } catch (e) {}
+}
+log('mcp_bridge.js starting (pid ' + process.pid + ', node ' + process.version + ')');
+process.on('uncaughtException', (e) => log('uncaughtException: ' + (e && e.stack || e)));
 
 // max-api is only present inside Node for Max; mock it when running standalone.
 let Max;
 try {
   Max = require('max-api');
+  log('max-api loaded (running inside Node for Max)');
 } catch (e) {
+  log('max-api not found; running standalone');
   Max = {
     post: (...a) => console.log('[max.post]', ...a),
     addHandler: () => {},
@@ -117,10 +132,12 @@ const server = net.createServer((socket) => {
 
 server.on('error', (err) => {
   Max.post('AbletonMCP bridge server error: ' + err.message);
+  log('server error: ' + err.message);
 });
 
 server.listen(PORT, '127.0.0.1', () => {
   Max.post('AbletonMCP Max bridge listening on 127.0.0.1:' + PORT);
+  log('listening on 127.0.0.1:' + PORT);
 });
 
 module.exports = { handle, analysis, PORT };

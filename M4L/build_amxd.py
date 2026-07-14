@@ -68,9 +68,14 @@ def analysis_maxpat(script_name="mcp_bridge.js"):
              outtype=["float"]),
         _box("obj-4", "newobj", "prepend peak", 220, 160, 90, 22, numin=1, numout=1,
              outtype=[""]),
-        # the Node for Max bridge; @watch reloads on file change during dev
-        _box("obj-5", "newobj", "node.script " + script_name + " @watch 1",
-             220, 210, 230, 22, numin=1, numout=2, outtype=["", "bang"]),
+        # the Node for Max bridge; @autostart runs it on load, @watch reloads
+        # the script when the file changes during development
+        _box("obj-5", "newobj",
+             "node.script " + script_name + " @autostart 1 @watch 1",
+             220, 210, 300, 22, numin=1, numout=2, outtype=["", "bang"]),
+        # belt-and-suspenders: also send "script start" on device load
+        _box("obj-7", "newobj", "loadbang", 480, 120, 60, 22, numin=1, numout=1),
+        _box("obj-8", "message", "script start", 480, 160, 80, 22, numin=2, numout=1),
         _box("obj-6", "comment", "AbletonMCP audio-analysis bridge (TCP 9878)",
              220, 250, 300, 20),
     ]
@@ -80,6 +85,8 @@ def analysis_maxpat(script_name="mcp_bridge.js"):
         _line("obj-1", 0, "obj-3", 0),   # L channel -> peakamp~
         _line("obj-3", 0, "obj-4", 0),   # peak float -> prepend peak
         _line("obj-4", 0, "obj-5", 0),   # "peak <v>" -> node.script
+        _line("obj-7", 0, "obj-8", 0),   # loadbang -> "script start" message
+        _line("obj-8", 0, "obj-5", 0),   # "script start" -> node.script
     ]
     return {
         "patcher": {
