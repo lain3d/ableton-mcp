@@ -125,14 +125,38 @@ Once the config file has been set on Claude, and the remote script is running in
 
 ## Capabilities
 
+This fork substantially extends the original with mixer, device, automation,
+and workflow control (60 tools in total). Grouped by area:
+
+**Session & tracks**
 - Get session and track information
-- Create and modify MIDI and audio tracks
-- Create full song arrangements from start to finish in Arrangement View
-- Create, edit, and trigger clips
-- Control playback
+- Create MIDI, audio, and return tracks; rename, duplicate, and delete tracks
+- Mixer control: volume, pan, sends, mute, solo, arm (regular / return / master)
+- Input & output routing (incl. routing one track into another / resampling)
+
+**Clips & MIDI**
+- Create and trigger MIDI and audio clips; import audio files as clips
+- Add, read back, and remove MIDI notes — including per-note expression
+  (probability, velocity deviation, release velocity)
+- Quantize clips; set loop points; set clip gain / pitch / warp (audio)
+- Duplicate and delete clips
+
+**Devices**
 - Load instruments and effects from Ableton's browser
-- Add notes to MIDI clips
-- Change tempo and other session parameters
+- List and set device parameters (by index or name), including devices nested
+  inside racks (Instrument / Audio Effect / Drum Racks)
+- Enable/disable and delete devices; inspect rack chains
+
+**Automation**
+- Write clip automation envelopes for any device parameter (e.g. filter sweeps)
+- Write clip automation for mixer volume / pan / sends
+
+**Scenes, transport & workflow**
+- Create, duplicate, delete, rename, and fire scenes
+- Playback/transport control; move the arrangement playhead; build arrangements
+- Undo / redo / capture MIDI; change tempo
+- `batch` — run many operations in a single round-trip (~13× faster than
+  issuing them one at a time)
 
 ## Example Commands
 
@@ -166,11 +190,46 @@ The system uses a simple JSON-based protocol over TCP sockets:
 - Commands are sent as JSON objects with a `type` and optional `params`
 - Responses are JSON objects with a `status` and `result` or `message`
 
-### Limitations & Security Considerations
+### Security
 
-- Creating complex musical arrangements might need to be broken down into smaller steps
-- The tool is designed to work with Ableton's default devices and browser items
-- Always save your work before extensive experimentation
+- The command server binds to `127.0.0.1` (loopback only), so it is not
+  reachable from the network. Run only one MCP client against it at a time.
+- The shared client socket is serialized with a lock, so concurrent tool calls
+  won't corrupt each other.
+
+### Limitations
+
+Some things are **not possible through Ableton's Remote Script API** and won't
+be added here:
+
+- **No saving the Live Set** — the API exposes no save function. Save your work
+  yourself before extensive experimentation.
+- **No audio rendering / export / bounce**, and no freeze/flatten.
+- **No raw audio generation or analysis** — you supply audio files; the tool
+  places, warps, and mixes them, but can't synthesize or read sample data.
+- **Automation is stepped, not smooth** — envelopes are written as flat
+  segments (a staircase), not linear/curved ramps.
+- **No MIDI CC envelopes in clips** — clip envelopes are keyed to device
+  parameters; raw MIDI CC lanes (mod wheel, etc.) aren't exposed.
+- **Arrangement editing is limited** — you can push Session clips to the
+  Arrangement and move the playhead, but not move/resize/delete arrangement
+  clips or edit arrangement automation.
+- **No warp-marker editing** (only warp on/off + mode) and **no device
+  reordering** within a chain.
+
+### Roadmap (feasible next steps)
+
+These are supported by the API and are good candidates for future work:
+
+- Track grouping (group tracks, fold/unfold) and colors (track/clip/scene)
+- Recording controls (session/arrangement record, overdub, metronome,
+  arrangement loop region, punch in/out)
+- Tempo automation and time-signature changes
+- Selection / view control (select clip or track, show detail view)
+- **State observers** — push notifications when the user changes something in
+  Live, enabling reactive workflows (the server is currently request/response
+  only)
+- Groove pool, crossfader assignment, and finer send/return routing
 
 ## Contributing
 
