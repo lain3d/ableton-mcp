@@ -4,7 +4,8 @@ import socket
 import json
 import logging
 import os
-from dataclasses import dataclass
+import threading
+from dataclasses import dataclass, field
 from contextlib import asynccontextmanager
 from typing import AsyncIterator, Dict, Any, List, Union
 
@@ -24,7 +25,10 @@ class AbletonConnection:
     host: str
     port: int
     sock: socket.socket = None
-    
+    # Serializes access to the shared socket so concurrent tool calls (FastMCP
+    # runs sync tools in a thread pool) don't interleave request/response frames.
+    _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
+
     def connect(self) -> bool:
         """Connect to the Ableton Remote Script socket server"""
         if self.sock:
@@ -139,7 +143,10 @@ class AbletonConnection:
         # large audio file). Give them a wider socket timeout so we don't time
         # out before the Remote Script's own queue does.
         long_running_commands = {"create_audio_clip": 65.0}
-        
+
+        # Hold the lock across the whole send/receive so concurrent tool calls
+        # don't interleave request/response frames on the shared socket.
+        self._lock.acquire()
         try:
             logger.info(f"Sending command: {command_type} with params: {params}")
             
@@ -190,6 +197,8 @@ class AbletonConnection:
             logger.error(f"Error communicating with Ableton: {str(e)}")
             self.sock = None
             raise Exception(f"Communication error with Ableton: {str(e)}")
+        finally:
+            self._lock.release()
 
 @asynccontextmanager
 async def server_lifespan(server: FastMCP) -> AsyncIterator[Dict[str, Any]]:

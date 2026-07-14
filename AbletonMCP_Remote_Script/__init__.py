@@ -16,9 +16,10 @@ try:
 except ImportError:
     import queue  # Python 3
 
-# Constants for socket communication
+# Constants for socket communication.
+# Bind to loopback only so the command server isn't reachable from the network.
 DEFAULT_PORT = 9877
-HOST = "0.0.0.0"
+HOST = "127.0.0.1"
 
 def create_instance(c_instance):
     """Create and return the AbletonMCP script instance"""
