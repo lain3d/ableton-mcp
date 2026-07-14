@@ -220,12 +220,13 @@ class AbletonMCP(ControlSurface):
         "set_track_volume", "set_track_pan", "set_track_send",
         "set_track_mute", "set_track_solo", "set_track_arm",
         "delete_track", "duplicate_track", "set_device_parameter",
+        "delete_device", "set_device_on",
         "remove_clip_notes", "quantize_clip", "set_clip_loop",
         "set_clip_gain", "set_clip_pitch", "set_clip_warp",
         "create_scene", "delete_scene", "duplicate_scene", "fire_scene", "set_scene_name",
         "delete_clip", "duplicate_clip",
         "set_track_input_routing", "set_track_output_routing",
-        "set_clip_envelope", "clear_clip_envelope",
+        "set_clip_envelope", "set_clip_mixer_envelope", "clear_clip_envelope",
         "undo", "redo", "capture_midi",
         "switch_to_arrangement_view", "set_current_song_time",
         "duplicate_session_clip_to_arrangement",
@@ -262,7 +263,13 @@ class AbletonMCP(ControlSurface):
         elif command_type == "get_device_parameters":
             return self._get_device_parameters(params.get("track_index", 0),
                                                params.get("device_index", 0),
-                                               params.get("track_type", "regular"))
+                                               params.get("track_type", "regular"),
+                                               params.get("chain_index", None),
+                                               params.get("chain_device_index", None))
+        elif command_type == "get_device_chains":
+            return self._get_device_chains(params.get("track_index", 0),
+                                           params.get("device_index", 0),
+                                           params.get("track_type", "regular"))
         elif command_type == "get_clip_notes":
             return self._get_clip_notes(params.get("track_index", 0), params.get("clip_index", 0))
         elif command_type == "get_track_routing":
@@ -326,7 +333,17 @@ class AbletonMCP(ControlSurface):
             return self._set_device_parameter(params.get("track_index", 0), params.get("device_index", 0),
                                               params.get("value", 0.0), params.get("parameter_index", None),
                                               params.get("parameter_name", None),
-                                              params.get("track_type", "regular"))
+                                              params.get("track_type", "regular"),
+                                              params.get("chain_index", None),
+                                              params.get("chain_device_index", None))
+        elif command_type == "delete_device":
+            return self._delete_device(params.get("track_index", 0), params.get("device_index", 0),
+                                       params.get("track_type", "regular"))
+        elif command_type == "set_device_on":
+            return self._set_device_on(params.get("track_index", 0), params.get("device_index", 0),
+                                       params.get("on", True), params.get("track_type", "regular"),
+                                       params.get("chain_index", None),
+                                       params.get("chain_device_index", None))
         # Clip content
         elif command_type == "remove_clip_notes":
             return self._remove_clip_notes(params.get("track_index", 0), params.get("clip_index", 0),
@@ -374,11 +391,20 @@ class AbletonMCP(ControlSurface):
             return self._set_clip_envelope(params.get("track_index", 0), params.get("clip_index", 0),
                                            params.get("device_index", 0), params.get("points", []),
                                            params.get("parameter_index", None), params.get("parameter_name", None),
-                                           params.get("clear_existing", True))
+                                           params.get("clear_existing", True),
+                                           params.get("chain_index", None),
+                                           params.get("chain_device_index", None))
+        elif command_type == "set_clip_mixer_envelope":
+            return self._set_clip_mixer_envelope(params.get("track_index", 0), params.get("clip_index", 0),
+                                                 params.get("target", "volume"), params.get("points", []),
+                                                 params.get("send_index", 0),
+                                                 params.get("clear_existing", True))
         elif command_type == "clear_clip_envelope":
             return self._clear_clip_envelope(params.get("track_index", 0), params.get("clip_index", 0),
                                              params.get("device_index", 0), params.get("parameter_index", None),
-                                             params.get("parameter_name", None))
+                                             params.get("parameter_name", None),
+                                             params.get("chain_index", None),
+                                             params.get("chain_device_index", None))
         elif command_type == "undo":
             return self._undo()
         elif command_type == "redo":
@@ -431,14 +457,9 @@ class AbletonMCP(ControlSurface):
         }
         
         try:
-            # Route the command to the appropriate handler
-            if command_type == "get_session_info":
-                response["result"] = self._get_session_info()
-            elif command_type == "get_track_info":
-                track_index = params.get("track_index", 0)
-                response["result"] = self._get_track_info(track_index)
-            # Batch and any state-mutating command run on Live's main thread.
-            elif command_type == "batch" or command_type in self.MODIFYING_COMMANDS:
+            # Batch and any state-mutating command run on Live's main thread;
+            # every read is handled directly by the shared dispatch below.
+            if command_type == "batch" or command_type in self.MODIFYING_COMMANDS:
                 # Use a thread-safe approach with a response queue
                 response_queue = queue.Queue()
                 
@@ -480,47 +501,10 @@ class AbletonMCP(ControlSurface):
                 except queue.Empty:
                     response["status"] = "error"
                     response["message"] = "Timeout waiting for operation to complete"
-            elif command_type == "get_browser_item":
-                uri = params.get("uri", None)
-                path = params.get("path", None)
-                response["result"] = self._get_browser_item(uri, path)
-            elif command_type == "get_browser_categories":
-                category_type = params.get("category_type", "all")
-                response["result"] = self._get_browser_categories(category_type)
-            elif command_type == "get_browser_items":
-                path = params.get("path", "")
-                item_type = params.get("item_type", "all")
-                response["result"] = self._get_browser_items(path, item_type)
-            # Add the new browser commands
-            elif command_type == "get_browser_tree":
-                category_type = params.get("category_type", "all")
-                response["result"] = self.get_browser_tree(category_type)
-            elif command_type == "get_browser_items_at_path":
-                path = params.get("path", "")
-                response["result"] = self.get_browser_items_at_path(path)
-            # Read-only arrangement command – no main-thread scheduling required
-            elif command_type == "get_arrangement_clips":
-                track_index = params.get("track_index", 0)
-                response["result"] = self._get_arrangement_clips(track_index)
-            # Read-only device introspection
-            elif command_type == "get_device_parameters":
-                track_index = params.get("track_index", 0)
-                device_index = params.get("device_index", 0)
-                track_type = params.get("track_type", "regular")
-                response["result"] = self._get_device_parameters(
-                    track_index, device_index, track_type)
-            # Read-only clip note introspection
-            elif command_type == "get_clip_notes":
-                track_index = params.get("track_index", 0)
-                clip_index = params.get("clip_index", 0)
-                response["result"] = self._get_clip_notes(track_index, clip_index)
-            # Read-only routing introspection
-            elif command_type == "get_track_routing":
-                track_index = params.get("track_index", 0)
-                response["result"] = self._get_track_routing(track_index)
             else:
-                response["status"] = "error"
-                response["message"] = "Unknown command: " + command_type
+                # All read-only commands run directly via the shared dispatch
+                # (raises "Unknown command" for genuinely unknown ones).
+                response["result"] = self._execute(command_type, params)
         except Exception as e:
             self.log_message("Error processing command: " + str(e))
             self.log_message(traceback.format_exc())
@@ -760,25 +744,44 @@ class AbletonMCP(ControlSurface):
                 raise Exception("No clip in slot")
             
             clip = clip_slot.clip
-            
-            # Convert note data to Live's format
-            live_notes = []
-            for note in notes:
-                pitch = note.get("pitch", 60)
-                start_time = note.get("start_time", 0.0)
-                duration = note.get("duration", 0.25)
-                velocity = note.get("velocity", 100)
-                mute = note.get("mute", False)
-                
-                live_notes.append((pitch, start_time, duration, velocity, mute))
-            
-            # Add the notes
-            clip.set_notes(tuple(live_notes))
-            
-            result = {
-                "note_count": len(notes)
-            }
-            return result
+
+            # Prefer the Live 11+ note API, which carries per-note expression
+            # (probability, velocity deviation, release velocity). Fall back to
+            # the legacy tuple API on older Live versions.
+            spec_cls = getattr(Live.Clip, "MidiNoteSpecification", None)
+            if hasattr(clip, "add_new_notes") and spec_cls is not None:
+                specs = []
+                for note in notes:
+                    kwargs = dict(
+                        pitch=int(note.get("pitch", 60)),
+                        start_time=float(note.get("start_time", 0.0)),
+                        duration=float(note.get("duration", 0.25)),
+                        velocity=float(note.get("velocity", 100)),
+                        mute=bool(note.get("mute", False)),
+                        probability=float(note.get("probability", 1.0)),
+                        velocity_deviation=float(note.get("velocity_deviation", 0.0)),
+                        release_velocity=float(note.get("release_velocity", 64)),
+                    )
+                    try:
+                        specs.append(spec_cls(**kwargs))
+                    except TypeError:
+                        # Older MidiNoteSpecification without the expression fields.
+                        specs.append(spec_cls(
+                            pitch=kwargs["pitch"], start_time=kwargs["start_time"],
+                            duration=kwargs["duration"], velocity=kwargs["velocity"],
+                            mute=kwargs["mute"]))
+                clip.add_new_notes(tuple(specs))
+            else:
+                live_notes = []
+                for note in notes:
+                    live_notes.append((int(note.get("pitch", 60)),
+                                       float(note.get("start_time", 0.0)),
+                                       float(note.get("duration", 0.25)),
+                                       int(note.get("velocity", 100)),
+                                       bool(note.get("mute", False))))
+                clip.set_notes(tuple(live_notes))
+
+            return {"note_count": len(notes)}
         except Exception as e:
             self.log_message("Error adding notes to clip: " + str(e))
             raise
@@ -1131,13 +1134,44 @@ class AbletonMCP(ControlSurface):
             self.log_message("Error duplicating track: " + str(e))
             raise
 
-    def _get_device_parameters(self, track_index, device_index, track_type="regular"):
+    def _resolve_device(self, track, device_index, chain_index=None, chain_device_index=None):
+        """Resolve a device on a track, optionally descending into a rack chain."""
+        if device_index < 0 or device_index >= len(track.devices):
+            raise IndexError("Device index out of range")
+        device = track.devices[device_index]
+        if chain_index is not None:
+            chains = getattr(device, "chains", None)
+            if not chains:
+                raise ValueError("Device '%s' has no chains" % device.name)
+            if chain_index < 0 or chain_index >= len(chains):
+                raise IndexError("Chain index out of range")
+            chain = chains[chain_index]
+            cd = 0 if chain_device_index is None else chain_device_index
+            if cd < 0 or cd >= len(chain.devices):
+                raise IndexError("Chain device index out of range")
+            device = chain.devices[cd]
+        return device
+
+    def _resolve_param_on_device(self, device, parameter_index, parameter_name):
+        if parameter_name is not None:
+            lname = str(parameter_name).lower()
+            for p in device.parameters:
+                if p.name.lower() == lname:
+                    return p
+            raise ValueError("Parameter '%s' not found on device '%s'"
+                             % (parameter_name, device.name))
+        if parameter_index is None:
+            raise ValueError("Provide parameter_index or parameter_name")
+        if parameter_index < 0 or parameter_index >= len(device.parameters):
+            raise IndexError("Parameter index out of range")
+        return device.parameters[parameter_index]
+
+    def _get_device_parameters(self, track_index, device_index, track_type="regular",
+                               chain_index=None, chain_device_index=None):
         """List a device's parameters with current value, range and display value."""
         try:
             track = self._get_track_by_index(track_index, track_type)
-            if device_index < 0 or device_index >= len(track.devices):
-                raise IndexError("Device index out of range")
-            device = track.devices[device_index]
+            device = self._resolve_device(track, device_index, chain_index, chain_device_index)
             params = []
             for i, p in enumerate(device.parameters):
                 info = {
@@ -1171,30 +1205,13 @@ class AbletonMCP(ControlSurface):
 
     def _set_device_parameter(self, track_index, device_index, value,
                               parameter_index=None, parameter_name=None,
-                              track_type="regular"):
+                              track_type="regular", chain_index=None,
+                              chain_device_index=None):
         """Set a device parameter by index or by (case-insensitive) name."""
         try:
             track = self._get_track_by_index(track_index, track_type)
-            if device_index < 0 or device_index >= len(track.devices):
-                raise IndexError("Device index out of range")
-            device = track.devices[device_index]
-
-            param = None
-            if parameter_name is not None:
-                lname = str(parameter_name).lower()
-                for p in device.parameters:
-                    if p.name.lower() == lname:
-                        param = p
-                        break
-                if param is None:
-                    raise ValueError("Parameter '%s' not found on device '%s'"
-                                     % (parameter_name, device.name))
-            else:
-                if parameter_index is None:
-                    raise ValueError("Provide parameter_index or parameter_name")
-                if parameter_index < 0 or parameter_index >= len(device.parameters):
-                    raise IndexError("Parameter index out of range")
-                param = device.parameters[parameter_index]
+            device = self._resolve_device(track, device_index, chain_index, chain_device_index)
+            param = self._resolve_param_on_device(device, parameter_index, parameter_name)
 
             if not getattr(param, "is_enabled", True):
                 raise ValueError("Parameter '%s' is not automatable" % param.name)
@@ -1213,6 +1230,62 @@ class AbletonMCP(ControlSurface):
             return result
         except Exception as e:
             self.log_message("Error setting device parameter: " + str(e))
+            raise
+
+    def _delete_device(self, track_index, device_index, track_type="regular"):
+        try:
+            track = self._get_track_by_index(track_index, track_type)
+            if device_index < 0 or device_index >= len(track.devices):
+                raise IndexError("Device index out of range")
+            name = track.devices[device_index].name
+            track.delete_device(device_index)
+            return {"deleted_name": name, "device_count": len(track.devices)}
+        except Exception as e:
+            self.log_message("Error deleting device: " + str(e))
+            raise
+
+    def _set_device_on(self, track_index, device_index, on, track_type="regular",
+                       chain_index=None, chain_device_index=None):
+        """Toggle a device on/off via its 'Device On' parameter."""
+        try:
+            track = self._get_track_by_index(track_index, track_type)
+            device = self._resolve_device(track, device_index, chain_index, chain_device_index)
+            param = None
+            for p in device.parameters:
+                if p.name == "Device On":
+                    param = p
+                    break
+            if param is None and len(device.parameters) > 0:
+                param = device.parameters[0]
+            if param is None:
+                raise ValueError("Device '%s' has no on/off parameter" % device.name)
+            param.value = 1.0 if on else 0.0
+            return {"device_name": device.name, "is_active": bool(device.is_active)}
+        except Exception as e:
+            self.log_message("Error setting device on/off: " + str(e))
+            raise
+
+    def _get_device_chains(self, track_index, device_index, track_type="regular"):
+        """Read a rack's chains and their nested devices (empty for non-racks)."""
+        try:
+            track = self._get_track_by_index(track_index, track_type)
+            if device_index < 0 or device_index >= len(track.devices):
+                raise IndexError("Device index out of range")
+            device = track.devices[device_index]
+            chains = getattr(device, "chains", None)
+            if not chains:
+                return {"device_name": device.name, "is_rack": False, "chains": []}
+            out = []
+            for ci, chain in enumerate(chains):
+                devs = [{"index": di, "name": d.name, "class_name": d.class_name,
+                         "num_parameters": len(d.parameters),
+                         "is_rack": bool(getattr(d, "chains", None))}
+                        for di, d in enumerate(chain.devices)]
+                out.append({"index": ci, "name": chain.name, "devices": devs})
+            return {"device_name": device.name, "is_rack": True,
+                    "chain_count": len(out), "chains": out}
+        except Exception as e:
+            self.log_message("Error getting device chains: " + str(e))
             raise
 
     # ── Clip content: notes, quantize, loop & audio warp ──────────────────────
@@ -1249,7 +1322,10 @@ class AbletonMCP(ControlSurface):
         if hasattr(clip, "get_notes_extended"):
             return [
                 {"pitch": n.pitch, "start_time": n.start_time, "duration": n.duration,
-                 "velocity": n.velocity, "mute": n.mute}
+                 "velocity": n.velocity, "mute": n.mute,
+                 "probability": getattr(n, "probability", 1.0),
+                 "velocity_deviation": getattr(n, "velocity_deviation", 0.0),
+                 "release_velocity": getattr(n, "release_velocity", 64)}
                 for n in clip.get_notes_extended(0, 128, 0.0, clip.length)
             ]
         return [
@@ -1544,26 +1620,68 @@ class AbletonMCP(ControlSurface):
 
     # ── Clip automation envelopes ─────────────────────────────────────────────
 
-    def _resolve_parameter(self, track, device_index, parameter_index, parameter_name):
-        if device_index < 0 or device_index >= len(track.devices):
-            raise IndexError("Device index out of range")
-        device = track.devices[device_index]
-        if parameter_name is not None:
-            lname = str(parameter_name).lower()
-            for p in device.parameters:
-                if p.name.lower() == lname:
-                    return device, p
-            raise ValueError("Parameter '%s' not found on device '%s'"
-                             % (parameter_name, device.name))
-        if parameter_index is None:
-            raise ValueError("Provide parameter_index or parameter_name")
-        if parameter_index < 0 or parameter_index >= len(device.parameters):
-            raise IndexError("Parameter index out of range")
-        return device, device.parameters[parameter_index]
+    def _write_envelope(self, clip, param, points, clear_existing):
+        """Write a staircase automation envelope for ``param`` inside ``clip``.
+
+        insert_step writes a flat segment [time, time+duration]; a zero-length
+        step spans the whole clip, so each point holds its value until the next
+        (a staircase). Callers can override a point's span with "duration".
+        """
+        # Clearing is a Clip method (the envelope object has no clear()).
+        if clear_existing:
+            try:
+                clip.clear_envelope(param)
+            except Exception:
+                pass
+        # automation_envelope returns None when the clip has no envelope yet;
+        # create_automation_envelope makes one.
+        env = clip.automation_envelope(param)
+        if env is None and hasattr(clip, "create_automation_envelope"):
+            env = clip.create_automation_envelope(param)
+        if env is None:
+            raise ValueError("Could not create automation envelope for '%s' "
+                             "(parameter may not be automatable)" % param.name)
+        pts = sorted(points, key=lambda p: float(p["time"]))
+        n = len(pts)
+        for i, pt in enumerate(pts):
+            t = float(pt["time"])
+            v = max(param.min, min(param.max, float(pt["value"])))
+            if "duration" in pt:
+                dur = float(pt["duration"])
+            elif i + 1 < n:
+                dur = float(pts[i + 1]["time"]) - t
+            else:
+                dur = (t - float(pts[i - 1]["time"])) if n > 1 else 1.0
+            env.insert_step(t, max(0.0, dur), v)
+        # Sample just inside each segment; value_at_time at an exact segment
+        # boundary returns the preceding segment's value.
+        sampled = []
+        for pt in pts:
+            try:
+                sampled.append({"time": pt["time"],
+                                "value": env.value_at_time(float(pt["time"]) + 0.001)})
+            except Exception:
+                pass
+        return {"point_count": len(points), "sampled": sampled}
+
+    def _mixer_param(self, track, target, send_index):
+        """Resolve a mixer DeviceParameter: 'volume', 'pan', or a send."""
+        md = track.mixer_device
+        if target == "volume":
+            return md.volume
+        elif target in ("pan", "panning"):
+            return md.panning
+        elif target == "send":
+            sends = md.sends
+            if send_index < 0 or send_index >= len(sends):
+                raise IndexError("Send index out of range")
+            return sends[send_index]
+        raise ValueError("target must be 'volume', 'pan', or 'send'")
 
     def _set_clip_envelope(self, track_index, clip_index, device_index, points,
                            parameter_index=None, parameter_name=None,
-                           clear_existing=True):
+                           clear_existing=True, chain_index=None,
+                           chain_device_index=None):
         """Write automation points for a track device's parameter inside a clip.
 
         points: list of {"time": beats, "value": param value, "duration": beats}.
@@ -1571,60 +1689,39 @@ class AbletonMCP(ControlSurface):
         try:
             clip = self._get_clip(track_index, clip_index)
             track = self._song.tracks[track_index]
-            device, param = self._resolve_parameter(
-                track, device_index, parameter_index, parameter_name)
-            # Clearing is a Clip method (the envelope object has no clear()).
-            if clear_existing:
-                try:
-                    clip.clear_envelope(param)
-                except Exception:
-                    pass
-            # automation_envelope returns None when the clip has no envelope for
-            # this parameter yet; create_automation_envelope makes one.
-            env = clip.automation_envelope(param)
-            if env is None and hasattr(clip, "create_automation_envelope"):
-                env = clip.create_automation_envelope(param)
-            if env is None:
-                raise ValueError("Could not create automation envelope for '%s' "
-                                 "(parameter may not be automatable)" % param.name)
-            # insert_step writes a flat segment [time, time+duration]. A zero-length
-            # step spans the whole clip, so each point holds its value until the
-            # next one (a staircase). Callers can override with an explicit duration.
-            pts = sorted(points, key=lambda p: float(p["time"]))
-            n = len(pts)
-            for i, pt in enumerate(pts):
-                t = float(pt["time"])
-                v = max(param.min, min(param.max, float(pt["value"])))
-                if "duration" in pt:
-                    dur = float(pt["duration"])
-                elif i + 1 < n:
-                    dur = float(pts[i + 1]["time"]) - t
-                else:
-                    dur = (t - float(pts[i - 1]["time"])) if n > 1 else 1.0
-                env.insert_step(t, max(0.0, dur), v)
-            # Sample just inside each segment; value_at_time at an exact segment
-            # boundary returns the preceding segment's value.
-            sampled = []
-            for pt in pts:
-                try:
-                    sampled.append({"time": pt["time"],
-                                    "value": env.value_at_time(float(pt["time"]) + 0.001)})
-                except Exception:
-                    pass
-            return {"clip_name": clip.name, "device_name": device.name,
-                    "parameter_name": param.name, "point_count": len(points),
-                    "sampled": sampled}
+            device = self._resolve_device(track, device_index, chain_index, chain_device_index)
+            param = self._resolve_param_on_device(device, parameter_index, parameter_name)
+            info = self._write_envelope(clip, param, points, clear_existing)
+            info.update({"clip_name": clip.name, "device_name": device.name,
+                         "parameter_name": param.name})
+            return info
         except Exception as e:
             self.log_message("Error setting clip envelope: " + str(e))
             raise
 
-    def _clear_clip_envelope(self, track_index, clip_index, device_index,
-                             parameter_index=None, parameter_name=None):
+    def _set_clip_mixer_envelope(self, track_index, clip_index, target, points,
+                                 send_index=0, clear_existing=True):
+        """Automate a track's mixer parameter (volume/pan/send) inside a clip."""
         try:
             clip = self._get_clip(track_index, clip_index)
             track = self._song.tracks[track_index]
-            device, param = self._resolve_parameter(
-                track, device_index, parameter_index, parameter_name)
+            param = self._mixer_param(track, target, send_index)
+            info = self._write_envelope(clip, param, points, clear_existing)
+            info.update({"clip_name": clip.name, "target": target,
+                         "parameter_name": param.name})
+            return info
+        except Exception as e:
+            self.log_message("Error setting clip mixer envelope: " + str(e))
+            raise
+
+    def _clear_clip_envelope(self, track_index, clip_index, device_index,
+                             parameter_index=None, parameter_name=None,
+                             chain_index=None, chain_device_index=None):
+        try:
+            clip = self._get_clip(track_index, clip_index)
+            track = self._song.tracks[track_index]
+            device = self._resolve_device(track, device_index, chain_index, chain_device_index)
+            param = self._resolve_param_on_device(device, parameter_index, parameter_name)
             cleared = False
             try:
                 clip.clear_envelope(param)

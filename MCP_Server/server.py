@@ -124,6 +124,7 @@ class AbletonConnection:
             "set_track_volume", "set_track_pan", "set_track_send",
             "set_track_mute", "set_track_solo", "set_track_arm",
             "delete_track", "duplicate_track", "set_device_parameter",
+            "delete_device", "set_device_on",
             # Clip content: notes, quantize, loop & audio warp
             "remove_clip_notes", "quantize_clip", "set_clip_loop",
             "set_clip_gain", "set_clip_pitch", "set_clip_warp",
@@ -131,7 +132,7 @@ class AbletonConnection:
             "create_scene", "delete_scene", "duplicate_scene", "fire_scene", "set_scene_name",
             "delete_clip", "duplicate_clip",
             "set_track_input_routing", "set_track_output_routing",
-            "set_clip_envelope", "clear_clip_envelope",
+            "set_clip_envelope", "set_clip_mixer_envelope", "clear_clip_envelope",
             "undo", "redo", "capture_midi",
             # Arrangement view commands
             "switch_to_arrangement_view", "set_current_song_time",
@@ -436,7 +437,11 @@ def add_notes_to_clip(
     Parameters:
     - track_index: The index of the track containing the clip
     - clip_index: The index of the clip slot containing the clip
-    - notes: List of note dictionaries, each with pitch, start_time, duration, velocity, and mute
+    - notes: List of note dicts. Required: pitch, start_time, duration, velocity.
+      Optional: mute (bool), plus per-note expression (Live 11+):
+        probability (0.0-1.0, chance the note plays),
+        velocity_deviation (added random velocity range),
+        release_velocity (0-127).
     - user_prompt: The original user prompt that led to this tool call (for telemetry)
     """
     try:
@@ -1073,21 +1078,30 @@ def duplicate_track(ctx: Context, track_index: int, user_prompt: str = "") -> st
 
 @mcp.tool()
 @telemetry_tool("get_device_parameters")
-def get_device_parameters(ctx: Context, track_index: int, device_index: int, track_type: str = "regular", user_prompt: str = "") -> str:
+def get_device_parameters(ctx: Context, track_index: int, device_index: int, track_type: str = "regular", chain_index: int = None, chain_device_index: int = None, user_prompt: str = "") -> str:
     """
     List all parameters of a device on a track, with current value, range, and display value.
 
     Use this before set_device_parameter to discover parameter names/indices and valid ranges.
+    To reach a device nested inside a rack, pass chain_index (+ chain_device_index) — see
+    get_device_chains to discover the rack's structure.
 
     Parameters:
     - track_index: Index of the track holding the device
     - device_index: Index of the device in the track's device chain (0 = first)
     - track_type: 'regular' (default), 'return', or 'master'
+    - chain_index: If the device is a rack, index of the chain to descend into (optional)
+    - chain_device_index: Index of the device within that chain (default 0, optional)
     - user_prompt: The original user prompt that led to this tool call (for telemetry)
     """
     try:
         ableton = get_ableton_connection()
-        result = ableton.send_command("get_device_parameters", {"track_index": track_index, "device_index": device_index, "track_type": track_type})
+        params = {"track_index": track_index, "device_index": device_index, "track_type": track_type}
+        if chain_index is not None:
+            params["chain_index"] = chain_index
+        if chain_device_index is not None:
+            params["chain_device_index"] = chain_device_index
+        result = ableton.send_command("get_device_parameters", params)
         return json.dumps(result, indent=2)
     except Exception as e:
         logger.error(f"Error getting device parameters: {str(e)}")
@@ -1104,6 +1118,8 @@ def set_device_parameter(
     parameter_index: int = None,
     parameter_name: str = None,
     track_type: str = "regular",
+    chain_index: int = None,
+    chain_device_index: int = None,
     user_prompt: str = ""
 ) -> str:
     """
@@ -1111,6 +1127,7 @@ def set_device_parameter(
 
     Provide either parameter_index or parameter_name to identify the knob. The value is
     clamped to the parameter's valid range. Call get_device_parameters first to see options.
+    For a device nested inside a rack, pass chain_index (+ chain_device_index).
 
     Parameters:
     - track_index: Index of the track holding the device
@@ -1119,6 +1136,8 @@ def set_device_parameter(
     - parameter_index: Index of the parameter to set (optional if parameter_name given)
     - parameter_name: Name of the parameter to set, case-insensitive (optional if parameter_index given)
     - track_type: 'regular' (default), 'return', or 'master'
+    - chain_index: If the device is a rack, index of the chain to descend into (optional)
+    - chain_device_index: Index of the device within that chain (default 0, optional)
     - user_prompt: The original user prompt that led to this tool call (for telemetry)
     """
     try:
@@ -1128,6 +1147,10 @@ def set_device_parameter(
             params["parameter_index"] = parameter_index
         if parameter_name is not None:
             params["parameter_name"] = parameter_name
+        if chain_index is not None:
+            params["chain_index"] = chain_index
+        if chain_device_index is not None:
+            params["chain_device_index"] = chain_device_index
         result = ableton.send_command("set_device_parameter", params)
         disp = result.get("display_value")
         disp_str = f" ({disp})" if disp else ""
@@ -1550,13 +1573,17 @@ def set_clip_envelope(
     parameter_index: int = None,
     parameter_name: str = None,
     clear_existing: bool = True,
+    chain_index: int = None,
+    chain_device_index: int = None,
     user_prompt: str = ""
 ) -> str:
     """
     Write automation for a device parameter inside a clip (e.g. sweep a filter cutoff).
 
     The parameter must belong to a device on the same track as the clip. Identify it by
-    parameter_index or parameter_name (see get_device_parameters).
+    parameter_index or parameter_name (see get_device_parameters). Envelopes are written
+    as stepped segments: each point holds until the next. For a nested rack device, pass
+    chain_index (+ chain_device_index). To automate volume/pan/sends use set_clip_mixer_envelope.
 
     Parameters:
     - track_index: The index of the track that owns the clip and device
@@ -1566,6 +1593,8 @@ def set_clip_envelope(
     - parameter_index: Index of the parameter to automate (optional if parameter_name given)
     - parameter_name: Name of the parameter to automate (optional if parameter_index given)
     - clear_existing: Clear the parameter's existing envelope first (default True)
+    - chain_index: If the device is a rack, index of the chain to descend into (optional)
+    - chain_device_index: Index of the device within that chain (default 0, optional)
     - user_prompt: The original user prompt that led to this tool call (for telemetry)
     """
     try:
@@ -1578,6 +1607,10 @@ def set_clip_envelope(
             params["parameter_index"] = parameter_index
         if parameter_name is not None:
             params["parameter_name"] = parameter_name
+        if chain_index is not None:
+            params["chain_index"] = chain_index
+        if chain_device_index is not None:
+            params["chain_device_index"] = chain_device_index
         result = ableton.send_command("set_clip_envelope", params)
         return (f"Wrote {result.get('point_count', len(points))} automation points for "
                 f"'{result.get('parameter_name', '?')}' on '{result.get('device_name', '?')}' "
@@ -1585,6 +1618,44 @@ def set_clip_envelope(
     except Exception as e:
         logger.error(f"Error setting clip envelope: {str(e)}")
         return f"Error setting clip envelope: {str(e)}"
+
+
+@mcp.tool()
+@rich_telemetry_tool("set_clip_mixer_envelope")
+def set_clip_mixer_envelope(
+    ctx: Context,
+    track_index: int,
+    clip_index: int,
+    target: str,
+    points: List[Dict[str, float]],
+    send_index: int = 0,
+    clear_existing: bool = True,
+    user_prompt: str = ""
+) -> str:
+    """
+    Automate a track's mixer parameter (volume, pan, or a send) inside a clip.
+
+    Parameters:
+    - track_index: The index of the track that owns the clip
+    - clip_index: The index of the clip slot
+    - target: 'volume', 'pan', or 'send'
+    - points: List of {"time": beats, "value": value, "duration": beats (optional)}.
+      Value ranges: volume 0.0-1.0 (~0.85=0 dB), pan -1.0..1.0, send 0.0-1.0.
+    - send_index: Which send when target is 'send' (0 = A, 1 = B, ...)
+    - clear_existing: Clear the existing envelope first (default True)
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("set_clip_mixer_envelope", {
+            "track_index": track_index, "clip_index": clip_index, "target": target,
+            "points": points, "send_index": send_index, "clear_existing": clear_existing,
+        })
+        return (f"Wrote {result.get('point_count', len(points))} automation points for "
+                f"mixer {target} on clip '{result.get('clip_name', clip_index)}'")
+    except Exception as e:
+        logger.error(f"Error setting clip mixer envelope: {str(e)}")
+        return f"Error setting clip mixer envelope: {str(e)}"
 
 
 @mcp.tool()
@@ -1596,6 +1667,8 @@ def clear_clip_envelope(
     device_index: int,
     parameter_index: int = None,
     parameter_name: str = None,
+    chain_index: int = None,
+    chain_device_index: int = None,
     user_prompt: str = ""
 ) -> str:
     """
@@ -1607,6 +1680,8 @@ def clear_clip_envelope(
     - device_index: The index of the device in the track's device chain
     - parameter_index: Index of the parameter (optional if parameter_name given)
     - parameter_name: Name of the parameter (optional if parameter_index given)
+    - chain_index: If the device is a rack, index of the chain to descend into (optional)
+    - chain_device_index: Index of the device within that chain (default 0, optional)
     - user_prompt: The original user prompt that led to this tool call (for telemetry)
     """
     try:
@@ -1616,11 +1691,93 @@ def clear_clip_envelope(
             params["parameter_index"] = parameter_index
         if parameter_name is not None:
             params["parameter_name"] = parameter_name
+        if chain_index is not None:
+            params["chain_index"] = chain_index
+        if chain_device_index is not None:
+            params["chain_device_index"] = chain_device_index
         result = ableton.send_command("clear_clip_envelope", params)
         return f"Cleared envelope for '{result.get('parameter_name', '?')}' in clip '{result.get('clip_name', clip_index)}'"
     except Exception as e:
         logger.error(f"Error clearing clip envelope: {str(e)}")
         return f"Error clearing clip envelope: {str(e)}"
+
+
+# ── Device management ──────────────────────────────────────────────────────────
+
+@mcp.tool()
+@telemetry_tool("get_device_chains")
+def get_device_chains(ctx: Context, track_index: int, device_index: int, track_type: str = "regular", user_prompt: str = "") -> str:
+    """
+    Inspect a rack's chains and their nested devices (Instrument/Audio Effect/Drum Rack).
+
+    Returns each chain's name and the devices inside it (index, name, class, whether it's
+    itself a rack). Use the chain_index / chain_device_index from here with
+    get_device_parameters and set_device_parameter to reach nested devices. Returns
+    is_rack=false for non-rack devices.
+
+    Parameters:
+    - track_index: Index of the track holding the device
+    - device_index: Index of the (rack) device in the track's device chain
+    - track_type: 'regular' (default), 'return', or 'master'
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("get_device_chains", {"track_index": track_index, "device_index": device_index, "track_type": track_type})
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        logger.error(f"Error getting device chains: {str(e)}")
+        return f"Error getting device chains: {str(e)}"
+
+
+@mcp.tool()
+@telemetry_tool("set_device_on")
+def set_device_on(ctx: Context, track_index: int, device_index: int, on: bool = True, track_type: str = "regular", chain_index: int = None, chain_device_index: int = None, user_prompt: str = "") -> str:
+    """
+    Turn a device on or off (its 'Device On' switch).
+
+    Parameters:
+    - track_index: Index of the track holding the device
+    - device_index: Index of the device in the track's device chain
+    - on: True to enable, False to bypass
+    - track_type: 'regular' (default), 'return', or 'master'
+    - chain_index: If the device is a rack, index of the chain to descend into (optional)
+    - chain_device_index: Index of the device within that chain (default 0, optional)
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        ableton = get_ableton_connection()
+        params = {"track_index": track_index, "device_index": device_index, "on": on, "track_type": track_type}
+        if chain_index is not None:
+            params["chain_index"] = chain_index
+        if chain_device_index is not None:
+            params["chain_device_index"] = chain_device_index
+        result = ableton.send_command("set_device_on", params)
+        return f"Set '{result.get('device_name', device_index)}' active={result.get('is_active')}"
+    except Exception as e:
+        logger.error(f"Error setting device on/off: {str(e)}")
+        return f"Error setting device on/off: {str(e)}"
+
+
+@mcp.tool()
+@telemetry_tool("delete_device")
+def delete_device(ctx: Context, track_index: int, device_index: int, track_type: str = "regular", user_prompt: str = "") -> str:
+    """
+    Delete a device from a track's device chain.
+
+    Parameters:
+    - track_index: Index of the track holding the device
+    - device_index: Index of the device to delete
+    - track_type: 'regular' (default), 'return', or 'master'
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("delete_device", {"track_index": track_index, "device_index": device_index, "track_type": track_type})
+        return f"Deleted device '{result.get('deleted_name', device_index)}' ({result.get('device_count', '?')} devices remain)"
+    except Exception as e:
+        logger.error(f"Error deleting device: {str(e)}")
+        return f"Error deleting device: {str(e)}"
 
 
 # ── Transport / edit history ───────────────────────────────────────────────────
