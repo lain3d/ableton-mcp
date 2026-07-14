@@ -149,8 +149,13 @@ class AbletonConnection:
         # don't interleave request/response frames on the shared socket.
         self._lock.acquire()
         try:
+            # Another thread may have invalidated the socket (on error) between
+            # the check above and acquiring the lock.
+            if self.sock is None and not self.connect():
+                raise ConnectionError("Not connected to Ableton")
+
             logger.info(f"Sending command: {command_type} with params: {params}")
-            
+
             # Send the command
             self.sock.sendall(json.dumps(command).encode('utf-8'))
             logger.info(f"Command sent, waiting for response...")
@@ -244,18 +249,22 @@ def get_ableton_connection():
 
     if _ableton_connection is not None and _ableton_connection.sock is not None:
         try:
-            # Check if the socket is still alive by peeking for data
-            # MSG_PEEK + MSG_DONTWAIT will raise BlockingIOError if alive but no data,
-            # or return b'' if the remote end has closed the connection.
-            _ableton_connection.sock.setblocking(False)
-            try:
-                data = _ableton_connection.sock.recv(1, socket.MSG_PEEK)
-                if data == b'':
-                    raise ConnectionError("Remote end closed")
-            except BlockingIOError:
-                pass  # Socket is alive, just no data waiting — this is normal
-            finally:
-                _ableton_connection.sock.setblocking(True)
+            # Check if the socket is still alive by peeking for data. Hold the
+            # connection lock so this doesn't toggle blocking mode / read the
+            # socket while another thread is mid send_command on it.
+            # MSG_PEEK raises BlockingIOError if alive but no data waiting,
+            # or returns b'' if the remote end has closed the connection.
+            with _ableton_connection._lock:
+                _ableton_connection.sock.setblocking(False)
+                try:
+                    data = _ableton_connection.sock.recv(1, socket.MSG_PEEK)
+                    if data == b'':
+                        raise ConnectionError("Remote end closed")
+                except BlockingIOError:
+                    pass  # Socket is alive, just no data waiting — this is normal
+                finally:
+                    if _ableton_connection.sock is not None:
+                        _ableton_connection.sock.setblocking(True)
             return _ableton_connection
         except Exception as e:
             logger.warning(f"Existing connection is no longer valid: {str(e)}")

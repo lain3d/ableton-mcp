@@ -427,23 +427,44 @@ class AbletonMCP(ControlSurface):
         """Run a list of operations in order in a single main-thread pass.
 
         Each operation is {"type": command_type, "params": {...}}. Results are
-        collected per-op so one failure doesn't lose the others' outcomes.
+        collected per-op so one failure doesn't lose the others' outcomes. The
+        whole batch is grouped into one undo step so a single undo reverts it.
         """
-        results = []
-        for op in operations:
-            op_type = op.get("type", "")
-            op_params = op.get("params", {})
+        song = self._song
+        # Skip grouping if the batch itself calls undo/redo, which would operate
+        # on a half-open undo step.
+        types = set(op.get("type", "") for op in operations)
+        group = (hasattr(song, "begin_undo_step") and hasattr(song, "end_undo_step")
+                 and not (types & set(("undo", "redo"))))
+        if group:
             try:
-                res = self._execute(op_type, op_params)
-                results.append({"status": "success", "type": op_type, "result": res})
-            except Exception as e:
-                self.log_message("Batch op '%s' failed: %s" % (op_type, str(e)))
-                results.append({"status": "error", "type": op_type, "message": str(e)})
-                if stop_on_error:
-                    break
+                song.begin_undo_step()
+            except Exception:
+                group = False
+
+        results = []
+        try:
+            for op in operations:
+                op_type = op.get("type", "")
+                op_params = op.get("params", {})
+                try:
+                    res = self._execute(op_type, op_params)
+                    results.append({"status": "success", "type": op_type, "result": res})
+                except Exception as e:
+                    self.log_message("Batch op '%s' failed: %s" % (op_type, str(e)))
+                    results.append({"status": "error", "type": op_type, "message": str(e)})
+                    if stop_on_error:
+                        break
+        finally:
+            if group:
+                try:
+                    song.end_undo_step()
+                except Exception:
+                    pass
+
         succeeded = sum(1 for r in results if r["status"] == "success")
         return {"operation_count": len(operations), "succeeded": succeeded,
-                "results": results}
+                "grouped_undo": group, "results": results}
 
     def _process_command(self, command):
         """Process a command from the client and return a response"""
@@ -1319,6 +1340,9 @@ class AbletonMCP(ControlSurface):
         Script runtime raises their DeprecationWarning as an error, so use the
         extended API when available and fall back only on older Live versions.
         """
+        # Use a large time span rather than clip.length: a looping clip reports
+        # its loop length, which would hide notes placed beyond the loop end.
+        span = 1000000.0
         if hasattr(clip, "get_notes_extended"):
             return [
                 {"pitch": n.pitch, "start_time": n.start_time, "duration": n.duration,
@@ -1326,12 +1350,12 @@ class AbletonMCP(ControlSurface):
                  "probability": getattr(n, "probability", 1.0),
                  "velocity_deviation": getattr(n, "velocity_deviation", 0.0),
                  "release_velocity": getattr(n, "release_velocity", 64)}
-                for n in clip.get_notes_extended(0, 128, 0.0, clip.length)
+                for n in clip.get_notes_extended(0, 128, 0.0, span)
             ]
         return [
             {"pitch": t[0], "start_time": t[1], "duration": t[2],
              "velocity": t[3], "mute": t[4]}
-            for t in clip.get_notes(0.0, 0, clip.length, 128)
+            for t in clip.get_notes(0.0, 0, span, 128)
         ]
 
     def _get_clip_notes(self, track_index, clip_index):
